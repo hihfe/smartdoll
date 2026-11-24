@@ -1,6 +1,6 @@
 # 机械性切面（with.h）
 
-> 与业务无关的机械动作的唯一收容处——**纯头文件：没有实现、没有进程、不占模块号**，各模块共同可见（同 [media.md](media.md) 形态）。**lambda 模拟 AOP around**：业务住 lambda（本体），机械住切面；切面 = 统一 `Aspect` 数据形，`with(切面…, 本体)` 一次平铺、不嵌套。
+> 与业务无关的机械动作的唯一收容处——**纯头文件：没有实现、没有进程、不占模块号**，各模块共同可见（同 [media.md](media.md) 形态）。**lambda 模拟 AOP around**：业务住 lambda（本体），机械住切面；切面 = 统一 `Aspect` 数据形，`with（切面…, 本体）` 一次平铺、不嵌套。
 
 ## 为什么单独立库
 
@@ -22,15 +22,37 @@ struct Aspect {
     const char*  name;           // 观测/审查用
 };
 
-// with(切面…, 本体)：末位 = 业务 lambda，其余 = Aspect 值，一次平铺列出
+// with（切面…, 本体）：末位 = 业务 lambda，其余 = Aspect 值，一次平铺列出
 template <class... Ts> decltype(auto) with(Ts&&... ts);
 //   enter 按序（外 → 内），exit 逆序（内 → 外）；拒绝 → 走拒绝处置，本体不跑
 
-with(live(ip), ticket(ip.pending, e, ip.timer, 2s, 超时模板), [&](auto& e) { … });
+with(live(ip), ticket（ip.pending, e, ip.timer, 2s, 超时模板）, [&](auto& e) { … });
 
 // 分流表（with 的第二形）：按 type 查表分派，查无 → 丢弃并计数
 struct HandlerRow { EventType type; void (*fn)(void* ctx, const Event&); };
 ```
+
+## 工厂签名
+
+```cpp
+// 全部返回 Aspect；行类别对 = 形参类型固定（错挂编译不过）；表/条目类型、句柄非零走 requires/static_assert
+template <class R>  concept Stoppable = requires (const R& r) { { r.stopped() } -> std::convertible_to<bool>; };
+template <class T>  concept Ledger    = requires { typename T::entry_type; typename T::id_type; };
+
+template <Stoppable R>           Aspect live(R& x);
+template <Ledger Tab>            Aspect ticket(Tab& tab, typename Tab::entry_type e, Timer& t, uint64_t ns, Event tpl);
+template <Ledger Tab, class Key> Aspect settle(Tab& tab, Key&& key);   // Key = 单号，01 票根形 = 条目引用
+                                 Aspect rearm(OpCtx& op);
+                                 Aspect defer(Dispatcher& d);
+                                 Aspect intercept(const ErrPolicy& row);
+                                 Aspect backpressure(Dispatcher& d, const EventDef& row);
+                                 Aspect block(Ipc&, DataBlockView&);          // 住 02
+                                 Aspect heap(Timer&);                         // 住 04
+                                 Aspect rpc(Ipc&, PeerId, std::string_view op, const nlohmann::json& args,
+                                            PipeId ev_pipe, uint64_t timeout_ns);
+```
+
+- `ticket` 条目按值收、enter 发号（`e.id`、`TimerHandle`），本体 lambda 收登记后条目；`ns` 随行的 `TimeoutSrc` 取值（`kCaller` 实参 / `kSpec` 行解析 / `kNone` 不挂）。
 
 ## 标准切面库
 
@@ -39,12 +61,12 @@ struct HandlerRow { EventType type; void (*fn)(void* ctx, const Event&); };
 | 工厂 | state | enter | exit（恒一次） | 拒绝 | 收编自 |
 |---|---|---|---|---|---|
 | `live(x)` | 资源指针 | 查 `stopped` | — | 返回 `false`/断言 | 各门面"stop 后一律拒绝" |
-| `ticket(tab, e, t, ns, tpl)` | 表 / 条目 / `OpPolicy` 行 / 超时句柄 | 登记 + 在飞 + 按行挂超时 | 结案销账 + 撤超时 + 归零才销毁 | 迟到/作废：丢弃并计数 | 01 票根、02 请求表、05 IoTicket、06 任务表 |
+| `ticket(tab, e, t, ns, tpl)` | 表 / 条目 / `OpPolicy` 行（`kOpPolicy[e.kind]`，每类恰一行）/ 超时句柄 | 登记 + 在飞 + 按行挂超时 | 结案销账 + 撤超时 + 归零才销毁 | 迟到/作废：丢弃并计数 | 01 票根、02 请求表、05 IoTicket、06 任务表 |
 | `settle(tab, id)` | 表 / 单号 | 查条目 | 汇到 `ticket` 的同一 exit | 落空/作废 = 迟到：丢弃并计数 | 01 收割结案、02 销账、05 完成回流、06 摘单 |
 | `rearm(op)` | 常驻读单 | — | 读完成即重挂（每对端/连接/设备一张在飞） | — | 02 UDS、03 socket、04 timerfd、05 边沿 |
 | `defer(d)` | `Dispatcher` 指针 | 阻塞本体提交线程池 | 完成 `post()` 回流 | — | 03 connect、05 ioctl、06 ASR/TTS 代跑 |
-| `intercept(err行)` | `ErrPolicy` 行指针 | — | `expected` 落空 → 查行处置，不抛上层 | — | 01 translate、02/03 decode、05/06 推理 |
-| `backpressure(d, ev行)` | `Dispatcher` + `EventDef` 行指针 | 查 `qos` 行（阻塞/丢弃计数/留最新） | 丢弃即计数 | — | 01 投队列、02/03/05 环写 |
+| `intercept（err 行）` | `ErrPolicy` 行指针 | — | `expected` 落空 → 查行处置，不抛上层 | — | 01 translate、02/03 decode、05/06 推理 |
+| `backpressure（d, ev 行）` | `Dispatcher` + `EventDef` 行指针 | 查 `qos` 行（阻塞/丢弃计数/留最新） | 丢弃即计数 | — | 01 投队列、02/03/05 环写 |
 | `block(ip, view)` | `Ipc` + 块视图 | — | 用完恒 `release()` | — | 03/05/06 的"用完必须 release" |
 | `heap(t)` | `Timer` 指针 | 加锁（堆/表/timerfd 一把锁） | 恒 `reschedule()`（堆空 `clear()` 停表） | — | 04 的"动堆必重设" |
 | `rpc(ip, peer, "op", args, ev_pipe, timeout)` | 对端 + 报文参数 | 组报文 + 经 02 发请求 | 销账 + 错误码翻译 + 事件翻号段投递 | 发送失败/超时：错误码回填 | 03/06 客户端桩壳 |
