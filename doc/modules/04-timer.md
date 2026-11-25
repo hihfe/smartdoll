@@ -6,7 +6,7 @@
 
 定时语义层：把"到点叫人"做成上层可用的定时服务——一次性/周期/分组的登记与到期交付。
 
-1. **持有机制**：时间堆（Boost.Heap `d_ary_heap` + 句柄封装，RAII）+ timerfd（每进程一个，全部定时器共用）。堆顶到期时刻 `timerfd_settime(TFD_TIMER_ABSTIME, CLOCK_MONOTONIC)` 设时；凡动堆（改期/取消/暂停/恢复）收尾 = 原子替换（堆空 `clear()` 停表），不碰在飞申请单。
+1. **持有机制**：时间堆（Boost.Heap `d_ary_heap` + 句柄封装，RAII）+ timerfd（每进程一个，全部定时器共用）。堆顶到期时刻 `timerfd_settime(TFD_TIMER_ABSTIME, CLOCK_MONOTONIC)` 设时；凡动堆（改期/取消/暂停/恢复）收尾 = 原子替换，不碰在飞申请单。
 2. **定义契约**：`TimerSpec`（`at` 一次性 / `every` 周期）、语义句柄 `TimerHandle`、`TimerGroup`，门面自由函数 `tmr::arm()/cancel()/pause()/resume()/…_group()`；上层只见语义句柄与门面，不见堆句柄、不见 timerfd、不见类、不见 01 的 `OpKind`。
 3. **到期交付**：到期唤醒（`kTypeTimeout`）进 04 自己的 `inbox`，翻成内部事件 `kTypeTimerFire = 300`（业务不见）——04 在此弹堆、重设 timerfd、续期/结案，然后把**登记时的用户事件模板原样投出**（仅刷 `ts_ns`）到登记的管道。
 4. **周期语义**：`every(interval)` 自动续期；默认 **fixed-rate + 跳过积压**（读回的过期计数与实际时刻作积压信号）；fixed-delay 预留。
@@ -50,7 +50,7 @@ class Timer;                    // 资源聚合体（定义在实现文件）：
 namespace tmr {
 std::unique_ptr<Timer> create(Dispatcher&);          // 资源出生（RAII）+ 首挂 timerfd 读申请单（rearm_wait 首挂点）
 
-TimerHandle arm(Timer&, TimerSpec, Event tpl);       // 登记账本 + 入堆 + 重设 timerfd，tpl.pipe 即收件管道
+TimerHandle arm(Timer&, TimerSpec, Event tpl);       // 登记账本 + 入堆（收尾走 heap），tpl.pipe 即收件管道
 
 // 语法糖：arm 的参数适配形，无新不变量——只声明，实现进 .cc（after 用 clock_ns()，头文件不带时钟依赖）
 TimerHandle at(Timer&, uint64_t abs_ns, Event tpl);
@@ -61,7 +61,7 @@ bool cancel(Timer&, TimerHandle);            // 摘堆摘表，模板作废永�
 bool pause(Timer&, TimerHandle);   bool resume(Timer&, TimerHandle);    // true = 生效；句柄已销 = false（静默无操作）
 bool pause_group(Timer&, GroupId); bool resume_group(Timer&, GroupId);  // 组内无存活条目 = false
 bool cancel_group(Timer&, GroupId);
-void stop(Timer&);                           // 资源死：清零 timerfd → 摘堆清账本 → 注销 inbox 消费者，之后门面调用一律拒绝
+void stop(Timer&);                           // 资源死：清零 timerfd → 摘堆清账本 → 注销 inbox 消费者，之后门面调用一律拒绝（`live`）
 }
 ```
 
@@ -125,7 +125,7 @@ uint64_t skip_beats(const TimerSpec&, uint64_t due_ns, uint64_t now_ns); // 跳�
 Event    deliver_template(const Event& tpl, uint64_t now_ns);      // 原样拷贝 + 刷 ts_ns（模板本体不动）
 Event    make_fire_event(const TimerEntry&, uint64_t now_ns);      // 条目 → kTypeTimerFire（内部）
 
-// ===== 动堆切面（定义见 ../with.md）：with(heap(t), 本体) =====
+// ===== 动堆切面：heap 的定义处（Aspect 契约见 ../with.md）：with(heap(t), 本体) =====
 Aspect heap(Timer&);   // 返回 Aspect 值：state = Timer 指针；enter = 加锁（堆/表/timerfd 一把锁），exit = reschedule() 恒调（堆空 clear() 停表）
 
 // ===== 编排函数：带副作用，动词用命令式 =====
@@ -144,12 +144,12 @@ void        rearm_wait(Timer&);                     // 挂/重挂 timerfd 读申
 | 操作 | 调用线程 | 语义 |
 |---|---|---|
 | `create(Dispatcher&)` | 启动时 | 资源出生（RAII，类定义在实现文件构造）；create 即挂常驻读申请单（rearm_wait 首挂点） |
-| `arm(Timer&, spec, tpl)` | 任意线程 | 登记 + 入堆 + 重设 timerfd，返回 `TimerHandle`；`tpl.pipe` 即到期收件管道。语法糖 `at(t, abs, tpl)` / `after(t, delay, tpl)` / `every(t, iv, tpl)`（`arm` 的参数适配形，无新不变量，实现进 .cc） |
+| `arm(Timer&, spec, tpl)` | 任意线程 | 登记 + 入堆（收尾走 `heap`），返回 `TimerHandle`；`tpl.pipe` 即到期收件管道。语法糖 `at(t, abs, tpl)` / `after(t, delay, tpl)` / `every(t, iv, tpl)`（`arm` 的参数适配形，无新不变量，实现进 .cc） |
 | `cancel(Timer&, handle)` | 任意线程 | 摘堆摘表，模板作废永不投出；迟到（已 fire）返回 `false` 并计数 |
 | `pause(Timer&, handle)` / `resume(Timer&, handle)` | 任意线程 | 单档暂停/恢复，返回 `bool`：true = 生效，句柄已销 = `false`（静默无操作） |
 | `pause_group(Timer&, g)` / `resume_group(Timer&, g)` | 任意线程 | 整组暂停/恢复，返回 `bool`：组内无存活条目 = `false` |
 | `cancel_group(Timer&, g)` | 任意线程 | 整组取消，返回 `bool`：组内无存活条目 = `false` |
-| `stop(Timer&)` | 停机时 | 清零 timerfd → 摘堆清账本 → 注销 `inbox` 消费者；之后门面调用一律拒绝（返回 `false` / 断言） |
+| `stop(Timer&)` | 停机时 | 清零 timerfd → 摘堆清账本 → 注销 `inbox` 消费者；之后门面调用一律拒绝（`live`） |
 
 ### 到期流水线
 
@@ -161,11 +161,11 @@ sequenceDiagram
     participant L01 as 01（事件循环）
 
     BIZ->>TMR: tmr::arm(spec, 用户事件模板)
-    Note over TMR: ① 登记账本 + 入堆<br/>堆顶变化 → timerfd_settime（原子设时）
+    Note over TMR: ① arm：登记入堆（收尾走 heap）
 
     loop 每次到期
         L01->>TMR: kTypeTimeout（timerfd 读完成 → inbox）
-        Note over TMR: ② 翻成 kTypeTimerFire（内部）：弹堆到期档<br/>积压判定（过期计数 / 落后拍数）→ 跳到最近未来拍<br/>周期续期入堆 → 重设 timerfd → 重挂读申请单
+        Note over TMR: ② 翻成 kTypeTimerFire（内部）：弹堆到期档<br/>积压判定（过期计数 / 落后拍数）→ 跳到最近未来拍<br/>周期续期（收尾走 heap / rearm）
         TMR->>BIZ: ③ 用户事件模板原样投出（仅刷 ts_ns）→ tpl.pipe
     end
 
@@ -211,11 +211,11 @@ TimerHandle h = tmr::every(timer, 每500ms, Event{.type = 呼吸tick, .pipe = �
 - **交付语义**：到期把**登记时的用户事件模板原样投出**（仅刷 `ts_ns`）到 `tpl.pipe`；每句柄 `seq` = **计划拍号**（含跳过的拍，每续期/跳拍 +1，相邻 `seq` 差 − 1 = 欠拍数，对账依据），`TimerFire` 记 `due_ns`/`actual_ns` 供漂移观测；一次性到期即销档、句柄作废。
 - **周期语义**：fixed-rate 默认——续期按**计划到期时刻**加间隔（`due + every`），不按实际时刻，不累积漂移；落后超一拍即跳积压（并到最近未来拍，跳过的拍占号不投、不逐拍补投，锚点随之平移至新栅格，此后按新栅格续期）；fixed-delay 预留。
 - **组语义**：暂停 = 摘堆留档（记暂停时刻）；恢复 = 一次性顺延剩余时长（`at_ns += 暂停时长`）、周期档从恢复时刻重锚（跳过暂停期间的拍，不补拍）；取消 = 整组摘堆摘表。
-- **动堆必重设（已结构化）**：凡动堆的操作（`arm`/`cancel`/`pause`/`resume`/`*_group`，含组/单档暂停与恢复）一律 `with(heap(t), …)` 包裹，exit 恒 `reschedule()` 重设 timerfd（**堆空时 `clear()` 停表**）——顺序条款变成结构，漏了就进不了库，不再有"旧时刻空醒一次/压住更近到期"的坑。
+- **动堆必重设（已结构化）**：凡动堆的操作（`arm`/`cancel`/`pause`/`resume`/`*_group`，含组/单档暂停与恢复）一律 `with(heap(t), …)` 包裹——条款住 `heap`（见"动堆切面"定义行），顺序条款变成结构，漏了就进不了库，不再有"旧时刻空醒一次/压住更近到期"的坑。
 - **机械性切面**：与业务无关且重复的机械动作一律 `with(切面…, 本体)` 包裹（切面 = `Aspect` 数据形：state 挂机械状态与策略行，见 [../with.md](../with.md)）——门面 `live`、动堆 `heap`（必重设）、读单 `rearm`（timerfd 常驻读单重挂）、inbox 分流 `with(ev, …)`；新增机械动作先过切面准入（工厂 + 参数审查），业务数据不进切面。
 - **取消与竞态**：**到期交付的唯一裁决点 = 04 的 `inbox` 消费线程**——弹堆、判定、投出在此串行；`cancel` 与到期以"账本条目归属"裁决，谁先摘到条目谁生效——`cancel` 迟到（条目已被弹走）返回 `false` 并计数，到期迟到（句柄已被摘）丢弃不投；`pause`/`resume`/组族同此裁决，已销即返回 `false`、静默无操作。与 02 的销账裁决同构。
 - **线程安全**：门面操作（`arm`/`cancel`/`pause`/`resume`/`pause_group`/`resume_group`/`cancel_group`）任意线程可调；账本、时间堆、timerfd 设时共用一把锁（多写单交付：登记/改期/取消在调用线程，交付/续期只在 `inbox` 消费线程）。`timerfd_settime` 是线程安全 syscall，锁内直调；timerfd 读申请单每 fire 重挂一次，经 01 代交（单提交者约定）。
 - **时钟与精度**：全线 `CLOCK_MONOTONIC`，到期时刻一律绝对时间；`TFD_TIMER_ABSTIME` 让内核按绝对时刻触发，改期/取消不产生漂移；对内精度到内核定时精度，业务抖动观测看 `TimerFire` 的 `due_ns`/`actual_ns`。
 - **生命周期**：`TimerHandle` 单调发号不复用（天然无 ABA）；`TimerEntry` 随 `TimerTable` 持有，禁裸 `new/delete`；RAII 管 timerfd；库类型（`handle_type`、fd、`itimerspec`）不出模块边界。
-- **stop()**：清零 timerfd → 摘堆清账本（模板作废）→ 注销 `inbox` 消费者；之后门面调用一律拒绝（返回 `false` / 断言）。
+- **stop()**：清零 timerfd → 摘堆清账本（模板作废）→ 注销 `inbox` 消费者；之后门面调用一律拒绝（`live`）。
 - **优化预留**：跨进程定时服务可后挂（04 服务进程统一计时，到期经 02 订阅模式把**用户事件模板原样**送回订阅方），`TimerSpec`/句柄/组契约不变、交付语义不变；日历/星期/cron 二期扩展 `TimerSpec`。

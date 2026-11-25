@@ -112,14 +112,14 @@ namespace ipc {
 std::unique_ptr<Ipc> create(Dispatcher&, Timer&);                    // 资源出生（RAII）
 void      listen(Ipc&, const std::string& path);    // 主进程 listen + 收连接：每 accept 即提交首张读申请单（经 01 代交）
 PeerId    connect(Ipc&, const std::string& path);   // 子进程 connect：建立即提交首张读申请单；断线重连（指数退避，见 kTypeIpcReconnect）
-RequestId request(Ipc&, PeerId to, IpcMessage, PipeId reply, uint64_t timeout_ns); // 发请求：登记 + 挂超时 + 发
+RequestId request(Ipc&, PeerId to, IpcMessage, PipeId reply, uint64_t timeout_ns); // 发请求（ticket）
 void      respond(Ipc&, PeerId to, RequestId, IpcMessage, int32_t err);            // 回响应：头填 id 与 error_code
 void      notify(Ipc&, PeerId to, IpcMessage);                                     // 单向通知：id = 0，不登记不等待
 bool      write_data(Ipc&, PeerId to, std::span<const std::byte>);                 // 写环，环满返回 false
 void      release(Ipc&, DataBlockView&);                                           // 归还即 consume
-void      stop(Ipc&);                                                              // 资源死：摘请求表（未决 kBroken 回填）→ 关连接拆环，之后门面调用一律拒绝
+void      stop(Ipc&);                                                              // 资源死：摘请求表（未决 kBroken 回填）→ 关连接拆环，之后门面调用一律拒绝（`live`）
 
-// ===== 门面糖：数据面块切面（定义见 ../with.md） =====
+// ===== 数据面块切面：block 的定义处（Aspect 契约见 ../with.md） =====
 Aspect block(Ipc&, DataBlockView&);   // 返回 Aspect 值：state = Ipc + 块视图；with(block(ip, view), 本体)——本体只读 data/len，exit 恒 release()
 }
 ```
@@ -219,25 +219,25 @@ void      close_peer(Ipc&, PeerId);               // 未决请求 kBroken 回填
 | `create(Dispatcher&, Timer&)` | — | 启动时 | 资源出生（RAII，类定义在实现文件构造） |
 | `listen(Ipc&, path)` | 传输 | 启动时 | 主进程监听 UDS，每个 accept 分配 `PeerId`；连接建立即提交首张读申请单（经 01 代交），读完成投回 `inbox` |
 | `connect(Ipc&, path)` | 传输 | 启动时 | 子进程连接，建立即提交首张读申请单；断线自动重连（指数退避，退避挂 04 `after` → `kTypeIpcReconnect`） |
-| `request(Ipc&, to, msg, reply_pipe, timeout)` | 协议 | 任意线程 | 发请求：登记请求表 + 挂超时，返回 `RequestId` |
+| `request(Ipc&, to, msg, reply_pipe, timeout)` | 协议 | 任意线程 | 发请求（`ticket` 登记），返回 `RequestId` |
 | `respond(Ipc&, to, id, msg, err)` | 协议 | 任意线程 | 回响应：头里填 `request_id` 与 `error_code` |
 | `notify(Ipc&, to, msg)` | 协议 | 任意线程 | 单向通知：`request_id = 0`，不登记不等待 |
 | `write_data(Ipc&, to, bytes)` | 传输 | 任意线程 | 写环（SPSC 布局，同环多线程写由 02 写侧自旋锁收敛）；环满返回 `false`，调用方决定重试/丢弃；空→非空写 eventfd |
 | `release(Ipc&, view)` | 传输 | 读端单线程 | 归还块视图，此刻才 `consume`，槽位方可复用（SPSC 单消费者，见规则"数据面"） |
-| `stop(Ipc&)` | — | 停机时 | 摘请求表（未决请求 `kBroken` 回填）→ 关连接拆环；之后门面调用一律拒绝（返回 `false` / 断言） |
+| `stop(Ipc&)` | — | 停机时 | 摘请求表（未决请求 `kBroken` 回填）→ 关连接拆环；之后门面调用一律拒绝（`live`） |
 
 ### 控制面流水线（请求 → 响应 / 超时）
 
 入站统一走 `on_ipc_event`：请求/通知投该对端 `events` 管道，响应走销账（下图走响应路）。
 
-发送侧与收尾侧的机械动作（停机守护、登记/挂超时、结案销账恒一次）全住切面——`request` 的实现体是 `Aspect` 链平铺的标准形（切面数据形见 [../with.md](../with.md)）：
+发送侧与收尾侧的机械动作（守护/登记/结案）全住切面——`request` 的实现体是 `Aspect` 链平铺的标准形（切面数据形见 [../with.md](../with.md)）：
 
 ```cpp
 RequestId ipc::request(Ipc& ip, PeerId to, IpcMessage msg, PipeId reply, uint64_t timeout_ns) {
-    return with(live(ip), ticket(ip.pending, {to, reply}, kOpIpcRequest, ip.timer, timeout_ns, 超时模板),  // 机械：stop 后拒绝 + 登记/挂超时
+    return with(live(ip), ticket(ip.pending, {to, reply}, kOpIpcRequest, ip.timer, timeout_ns, 超时模板),  // ticket：登记本单
                 [&](auto& e) {
-        return 发帧(ip, to, msg, e.id);                        // 业务：编解码 + 写（发送失败即销账 = exit 提前）
-    });   // ticket 的 exit：结案销账 + 撤超时——响应先到/超时先到/断连/发送失败哪条路收尾都恰好一次
+        return 发帧(ip, to, msg, e.id);                        // 业务：编解码 + 写发
+    });
 }
 ```
 
@@ -251,23 +251,23 @@ sequenceDiagram
     participant PEER as 对端进程
 
     BIZ->>IPC: ipc::request(msg, reply_pipe, 2s)
-    Note over IPC: ① 发：登记请求表（id → 回执管道 + TimerHandle）<br/>encode_frame，UDS 写申请单经 01 代交
+    Note over IPC: ① 发：ticket 登记<br/>encode_frame，UDS 写申请单经 01 代交
     IPC->>TMR: tmr::after(2s, kTypeIpcTimeout → inbox，IpcTimeoutPayload)
     IPC->>L01: UDS 写申请单
     L01->>PEER: 帧（32B 头 + string）
 
-    alt ③ 响应先到（销账）
+    alt ③ 响应先到（settle）
         PEER-->>L01: 响应帧
         L01->>IPC: IoReadDone → inbox
         Note over IPC: ② 收：on_read_done 攒帧（InboundFrame）<br/>→ decode_frame（头非法带出 IpcError）→ 查表
-        IPC->>TMR: tmr::cancel（撤超时）
+        IPC->>TMR: tmr::cancel（settle 收尾）
         IPC->>BIZ: to_event 投回执管道（kTypeIpcResponse）
-        Note over IPC: 摘表
+        Note over IPC: settle 收尾
     else ④ 超时先到
         TMR->>IPC: kTypeIpcTimeout 到期原样投 inbox
-        Note over IPC: on_timeout：摘表
+        Note over IPC: on_timeout → settle 收尾
         IPC->>BIZ: make_timeout_event 投回执管道<br/>（error_code = kTimeout，与响应同形）
-        Note over PEER: 响应姗姗来迟 → 查表落空，丢弃并计数
+        Note over PEER: 响应姗姗来迟 → settle 拒收
     end
 ```
 
@@ -309,7 +309,7 @@ sequenceDiagram
 
 ```cpp
 void ipc::on_ipc_event(Ipc& ip, const Event& ev) {
-    with(ev, {   // 机械：按 Event.type 查表分流，查无丢弃并计数
+    with(ev, {   // 机械：按 Event.type 查表分流
         {kTypeIoReadDone,   [&](const Event& e){ on_read_done(ip, e); }},
         {kTypeIoWriteDone,  [&](const Event& e){ on_write_done(ip, e); }},
         {kTypeWake,         [&](const Event& e){ on_wake(ip, e); }},
@@ -363,10 +363,10 @@ RequestId id = ipc::request(ip, AI进程, IpcMessage{.head{.type = kTypeIpcReque
 
 | 圈 | 醒因 | 02 处理 | 动作 |
 |---|---|---|---|
-| 1 | 业务调 `request()` | 登记请求表 + 挂 2s 超时 | UDS 写申请单经 01 代交 |
-| 2 | UDS 写完成 | `IoWriteDone` | 结案，释放发送缓冲 |
-| 3 | 对端响应到达 | `IoReadDone` → decode → 查表 | 撤超时，响应事件投对话管道 |
-| 3′ | （无响应）超时到期 | `kTypeIpcTimeout` 进 `inbox` | 摘表，合成 `kTimeout` 投对话管道 |
+| 1 | 业务调 `request()` | `ticket`：登记 | UDS 写申请单经 01 代交 |
+| 2 | UDS 写完成 | `IoWriteDone` | 写单 `settle`，释放发送缓冲 |
+| 3 | 对端响应到达 | `IoReadDone` → decode → 查表 | `settle` 收尾，响应事件投对话管道 |
+| 3′ | （无响应）超时到期 | `kTypeIpcTimeout` 进 `inbox` | `settle` 收尾，合成 `kTimeout` 投对话管道 |
 
 数据面更直：设备进程 `write_data()` 写环（空→非空）写 eventfd → 01 翻 `kTypeWake` 投 `inbox` → 02 投 `kTypeIpcDataReady`（视图直达）→ 业务用完 `release()`。
 
@@ -377,14 +377,14 @@ RequestId id = ipc::request(ip, AI进程, IpcMessage{.head{.type = kTypeIpcReque
 - **机械性切面**：与业务无关且重复的机械动作一律 `with(切面…, 本体)` 包裹（切面 = `Aspect` 数据形：state 挂机械状态与策略行，见 [../with.md](../with.md)）——门面 `live`、请求表与超时挂撤 `ticket`/`settle`、数据面块 `block`、inbox 分流 `with(ev, …)`、UDS 常驻读单 `rearm`；"用完必 release""发送失败即销账"等顺序条款由切面吸收；新增机械动作先过切面准入（工厂 + 参数审查）。
 - **消息格式**：线上格式以 `IpcHeader`/`IpcMessage` 定死（见数据结构）；`seq` 全局递增；`IpcError` 与 `EventType` 分两套常量空间，不撞号。
 - **号段**：02 占 100–199，新增消息类型在此扩展并出行（`EventDef` 声明即注册，策略随行出生，见 [../policy.md](../policy.md)）；body 里装什么由消息双方的模块文档约定，02 只定封装、寻址、请求/响应与错误。
-- **请求/响应**：任何一边只投一次——响应先到撤超时；超时先到投 `kTimeout`，迟到响应丢弃并计数（流程见控制面流水线）。**销账唯一裁决点 = `inbox` 消费线程**：响应销账与超时销账在此串行（都走 `settle` 切面，汇到同一 exit：撤超时 + 销账恒一次），"同时到达"的竞态窗口由单线程消费天然闭合——04 的 `cancel` 只作废未投出的到期，已入 `inbox` 的靠查表落空兜底。**发送失败即销账**：写失败/被背压丢弃的发送申请单，02 在 write-done 负错误码处即时回填销账（`kBroken`/`kBusy`），不等请求超时——不留死条目白挂。
-- **连接**：连接建立即提交首张读申请单（经 01 代交，读完成投回 `inbox`），此后读完成即重挂、每对端常驻一张在飞；重连重建连接后同样由 `on_reconnect` 首挂。重连由 connect 方负责（指数退避：档位 = `Backoff` 行，见 [../policy.md](../policy.md)；退避等待挂 04 的 `tmr::after`，到期 `kTypeIpcReconnect` 回 `inbox` 触发 `on_reconnect`）；`PeerId` 在对端进程生命周期内稳定，重连复用；每对端的连接与分帧状态独立维护。
+- **请求/响应**：任何一边只投一次（竞态收口走 `settle`，流程见控制面流水线）。**销账唯一裁决点 = `inbox` 消费线程**：响应销账与超时销账在此串行（都走 `settle`），"同时到达"的竞态窗口由单线程消费天然闭合——04 的 `cancel` 只作废未投出的到期，已入 `inbox` 的靠查表落空兜底。**发送失败即销账**（`ticket`）：写失败/被背压丢弃的发送申请单在 write-done 以 `kBroken`/`kBusy` 回填，不等请求超时。
+- **连接**：连接建立即提交首张读申请单（经 01 代交，读完成投回 `inbox`），此后读单走 `rearm`；重连重建连接后同样由 `on_reconnect` 首挂。重连由 connect 方负责（指数退避：档位 = `Backoff` 行，见 [../policy.md](../policy.md)；退避等待挂 04 的 `tmr::after`，到期 `kTypeIpcReconnect` 回 `inbox` 触发 `on_reconnect`）；`PeerId` 在对端进程生命周期内稳定，重连复用；每对端的连接与分帧状态独立维护。
 - **数据面**：eventfd 只做"空→非空"唤醒——tech-stack 记录的双向唤醒暂不采用，环满由调用方决定重试/丢弃（`write_data` 返回 `false`），"满→非空"唤醒留作优化；每对进程、每方向一条 SPSC 环，fd 走 `SCM_RIGHTS` 或 fork 继承。**SPSC = 单写单读**：写侧多线程由自旋锁收敛，读端消费与 `release` 须在同一线程（或业务外部串行化）——deliver 管道单投递即隐含单消费者，读游标不做锁。
-- **生命周期**：`DataBlockView` 用完必须 `release()`（结构形 = `with(block(…))`，exit 恒 `release()`）——drain 只 peek 不 consume，release 才 consume（视图带环标识与位置）；请求表条目随响应/超时/发送失败/断连摘除；RAII 管 fd 与映射，禁裸 `new/delete`。
+- **生命周期**：`DataBlockView` 生命周期走 `block`——drain 只 peek 不 consume，release 才 consume（视图带环标识与位置）；请求表条目随 `settle` 摘除；RAII 管 fd 与映射，禁裸 `new/delete`。
 - **线程安全**：门面操作（`listen`/`connect`/`request`/`respond`/`notify`/`write_data`）任意线程可调；`release` 例外——**读端单线程**（SPSC 单消费者，见"数据面"）。`RequestTable` 多写单读：登记在调用线程（`request()` 同步发号返回，不走 inbox 排队），摘除/销账只在 `inbox` 消费线程，表内一把锁护增删查。环本体仍是 SPSC（单写游标、单读游标）：同环多线程 `write_data` 由写侧自旋锁收敛，跨进程内存序（release/acquire）由环薄层保证；分帧状态每对端单线程（`inbox` 消费侧）。
 - **库类型不出边界**：fd、msghdr、iovec、mmap 指针都封在 02 内部。
 - **背压**：不写分支、写行——事件满时策略 = 契约块的 `EventDef` 行（本号段全 `kBlock`：控制面消息与状态都不许丢），UDS 发送缓冲满按事件行分策略；环满 = `write_data` 返 `false`（块 qos 声明制，见 [../media.md](../media.md)），调用方决定重试/丢弃/降级。
 - **错误两层**：不写分支——错误源的归属与处置是 `ErrPolicy` 行（见 [../policy.md](../policy.md)，下表即行的文档形），传输层走 `kTypeIpcBroken`、协议层走 `error_code`；`intercept` 切面查行，库错误不抛上层。
 - **崩溃与恢复**：断连 → 未决请求以 `IpcError::kBroken` 回填、`kTypeIpcBroken` 上报；**seq 对账**：读端 `drain` 与重建对账时发现 `seq` 跳号（丢块），合成 `kTypeIpcDataLost`（丢块区间）投该环 `deliver` 管道，业务决定重采或忽略；connect 方重连后重建环（`RingId` 复用）。
-- **stop()**：摘请求表（未决请求 `kBroken` 回填）→ 关连接拆环；之后门面调用一律拒绝（返回 `false` / 断言）。
+- **stop()**：摘请求表（未决请求 `kBroken` 回填）→ 关连接拆环；之后门面调用一律拒绝（`live`）。
 - **优化预留**：小消息可合并批量帧；环可换 MPSC 实现，`release()` 契约不变。

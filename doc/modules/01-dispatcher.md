@@ -60,7 +60,7 @@ struct OpCtx {
     SourceId source;
     PipeId   pipe;                // 回执地址：提交方声明，完成项翻成事件后投回这条管道
     void*    buf;  size_t len;
-    std::atomic<int> inflight;    // 在飞计数：归零才许销毁
+    std::atomic<int> inflight;    // 在飞计数（ticket 维护）
     bool     cancelled = false;   // 取消后迟到的完成项据此丢弃
 };
 
@@ -73,7 +73,7 @@ void post(Dispatcher&, Event);          // 入队并写 eventfd 唤醒循环
 void submit(Dispatcher&, Task);         // 任务进管道，线程池消费
 void submit_op(Dispatcher&, OpCtx);     // 申请单提交口：登记账本 + 上环（仅循环线程，其他线程 post() 代交）
 void run(Dispatcher&);                  // 进入事件循环，阻塞到 stop
-void stop(Dispatcher&);                 // 资源死：置位 → 唤醒 → drain 队列 → 等在飞结清 → 释放；之后门面调用一律拒绝
+void stop(Dispatcher&);                 // 资源死：置位 → 唤醒 → drain 队列 → 等在飞结清 → 释放；之后门面调用一律拒绝（`live`）
 }
 ```
 
@@ -128,9 +128,9 @@ bool                 should_drop(const Event& ev, size_t qlen);  // 背压判定
 
 // ===== 编排函数：带副作用，动词用命令式 =====
 
-void close_out(OpTable& ops, OpCtx& ctx); // 结案记账（ticket/settle 切面的 exit 体）：inflight--，归零才许销毁
+void close_out(OpTable& ops, OpCtx& ctx); // 结案记账（ticket/settle 切面的 exit 体）
 void harvest_into_queue(Dispatcher& d);   // 批量收割：with(settle(…)) → translate → 入队
-void enqueue_event(Dispatcher&, Event&&); // 入队点：with(backpressure(d, ev), 入队)——ev 是点上局部量，切面在此就地套（唯一允许二起 with 处）
+void enqueue_event(Dispatcher&, Event&&); // 入队点：with(backpressure(d, ev), 入队)
 void dispatch_to_pipes(Dispatcher& d);    // 排空队列 → with(backpressure(…)) 按 ev.pipe 投管道
 }  // namespace disp
 ```
@@ -146,7 +146,7 @@ void dispatch_to_pipes(Dispatcher& d);    // 排空队列 → with(backpressure(
 | `submit(Dispatcher&, Task)` | 任意线程 | 任务进管道，线程池消费，结果由 `fn` 自行 `post()` 回流 |
 | `submit_op(Dispatcher&, OpCtx)` | 循环线程 | 登记账本并上环：读写/超时/唤醒申请单统一入口 |
 | `run(Dispatcher&)` | 循环线程 | 进入事件循环，阻塞到 stop |
-| `stop(Dispatcher&)` | 任意线程 | 置位 → 唤醒 → drain 队列 → 等在飞结清 → 释放退出；之后门面调用一律拒绝（返回 `false` / 断言） |
+| `stop(Dispatcher&)` | 任意线程 | 置位 → 唤醒 → drain 队列 → 等在飞结清 → 释放退出；之后门面调用一律拒绝（`live`） |
 
 各门面实现体一律以 `with(live(d), …)` 起手——"stop 后一律拒绝"不靠每个函数自查（`live` 切面见 [../with.md](../with.md)）。
 
@@ -164,7 +164,7 @@ void disp::run(Dispatcher& d) {
         unsigned head = 0, n = 0;
         uint64_t now_ns = clock_ns();                   // 每圈取一次时钟，整批同刻
         d.ring.for_each_cqe(head, [&](const Cqe& c) {  // ③ 批量收割
-            with(settle(d.ops, *(OpCtx*)c.user_data, 该单的 OpPolicy 行), [&](OpCtx& ctx) {  // 机械：票根找回 + 取消丢弃 + 结案恒一次
+            with(settle(d.ops, *(OpCtx*)c.user_data, 该单的 OpPolicy 行), [&](OpCtx& ctx) {  // settle：收割该单
                 if (auto ev = translate(c, ctx, now_ns))                // 业务：翻译定形 + 错误拦截
                     enqueue_event(d, std::move(*ev));                   // 业务：入队（背压判定套在入队点，见下）
             });
@@ -207,11 +207,11 @@ std::optional<Event> disp::translate(const Cqe& c, const OpCtx& ctx, uint64_t no
 
 // 编排函数：结案记账，副作用只在这一处
 void disp::close_out(OpTable& ops, OpCtx& ctx) {
-    if (--ctx.inflight == 0) ops.try_erase(ctx);    // 归零才许销毁
+    if (--ctx.inflight == 0) ops.try_erase(ctx);
 }
 ```
 
-**先翻译后结账**：销账后单子可能被销毁，翻译必须赶在 `close_out` 之前——`settle` 切面的 exit（= `close_out`）恒在本体（翻译 + 入队）之后，顺序条款变成结构。
+**先翻译后结账**：销账后单子可能被销毁，翻译必须赶在 `close_out` 之前——条款住 `settle`（exit = `close_out`），顺序由结构保证。
 
 `EventFdWake` 在此分两路，判据是 `ctx.source`：`kInternalWakeSource`（保留值 0，永不分配给业务/对端）是内部唤醒，返回空——它只起唤醒循环、让循环排空队列的作用；其余是对端 eventfd，翻成 `Wake` 事件，按回执地址（`ctx.pipe`）投回 02 的管道（数据在共享内存，映射归 02）。
 
@@ -281,14 +281,14 @@ void bio::on_touch(Bionic& b, 触摸点 t) {
 
 - **风格**：外壳函数式、类退居资源聚合体——门面 = `disp` 自由函数操作集（契约与门面声明在头文件，应用层唯一可见面），内脏住实现文件、住 `disp`（不跨模块直调）：纯函数（`translate` / `should_drop`）无副作用、可单测；编排函数（`harvest_into_queue` / `close_out` / `dispatch_to_pipes` …）带副作用，动词用命令式 + 宾语。类只做资源聚合体与库薄壳；契约/账本结构体不带方法。
 - **门面准入**：新操作先问能否用既有门面组合实现——能则写成门面语法糖（参数适配、无新不变量），不能才新增门面原语；门面只增原语，不增类方法（演进防火墙）。
-- **机械性切面**：与业务无关且重复的机械动作一律 `with(切面…, 本体)` 包裹（切面 = `Aspect` 数据形：state 挂机械状态与策略行，见 [../with.md](../with.md)）——门面 `live`（停机守护）、提交/收割 `ticket`/`settle`（票根登记与结案恒一次）、投递 `backpressure`（背压判定）；"stop 后一律拒绝""先翻译后结账"等顺序条款由切面吸收；新增机械动作先过切面准入（工厂 + 参数审查），业务数据不进切面。
+- **机械性切面**：与业务无关且重复的机械动作一律 `with(切面…, 本体)` 包裹（切面 = `Aspect` 数据形：state 挂机械状态与策略行，见 [../with.md](../with.md)）——门面 `live`（停机守护）、提交/收割 `ticket`/`settle`（票根登记与结案）、投递 `backpressure`（背压判定）；"stop 后一律拒绝""先翻译后结账"等顺序条款由切面吸收；新增机械动作先过切面准入（工厂 + 参数审查），业务数据不进切面。
 - **扩展（号段约定）**：`EventType` 是弱类型 `uint32_t`（`enum class` 封死扩展，不用），01 只占 0–99（`kType*` 常量）；语义事件号段 = **模块号 × 100**（02→100、03→200、04→300、05→400、06→500、07→600，M2 业务层 1000 起），各模块在自己文档定义本号段的行（`EventDef`，见 [../policy.md](../policy.md)）与负载结构，无需改 01；负载同样弱类型（`std::any`，消费方 `any_cast`）。02 的 `IpcMessage`、05 的触摸点/传感器读数都不在 01 预置。
 - **寻址**：事件自带收件地址——IO 完成的回执地址由提交方声明（记在 `OpCtx.pipe`，`translate` 抄进 `Event.pipe`），语义事件由投递方在 `post()` 时声明；01 不持有 source→管道 归属表，管道是普通队列、单投递，谁登记谁收货。
 - **线程安全**：门面操作任意线程可调（`submit_op` 由循环线程执行，其他线程 `post()` 代交）；io_uring 环、账本、管道投递只在循环线程。库类型（SQE、CQE、队列迭代器）不出模块边界。
-- **生命周期**：账本条目带在飞计数，归零才许销毁；`OpCtx` 统一由账本持有，禁裸 `new/delete`。
-- **取消**：摘账本条目/取消在飞申请单，条目里存的事件随之作废、永不投出；迟到的完成项走 `settle` 切面的拒绝路径（丢弃并计数，不进翻译、不产生事件），结账照常。定时器取消语义归 04。
+- **生命周期**：账本条目生死走 `ticket`/`settle`；`OpCtx` 统一由账本持有，禁裸 `new/delete`。
+- **取消**：摘账本条目/取消在飞申请单，条目里存的事件随之作废、永不投出；迟到的完成项走 `settle`（不进翻译、不产生事件），结账照常。定时器取消语义归 04。
 - **定时器**：机制只有一张 timerfd 读申请单（`TimerWait` → `kTypeTimeout`）；时间堆、timerfd 设时、语义句柄、到期交付全在 04。
 - **背压**：不写分支、写行——每事件的满时策略就是它的 `EventDef` 行（`Qos::kBlock` 关键阻塞 / `kDropCount` 丢弃计数 / `kKeepLatest` 留最新，见 [../policy.md](../policy.md)），`should_drop` 查表；新增事件不出行就定义不出来（编译期审查），号段主人在自己契约块出行。
 - **错误拦截**：负错误码在 `translate` 转 `kTypeError` 事件或丢弃，不把库错误抛给上层。
-- **stop()**：置位 → 唤醒 → drain 队列 → 等在飞结清 → 释放退出；之后门面调用一律拒绝（返回 `false` / 断言）。
+- **stop()**：置位 → 唤醒 → drain 队列 → 等在飞结清 → 释放退出；之后门面调用一律拒绝（`live`）。
 - **优化预留**：回流争用高时可换"每生产者 SPSC 邮箱 + 分发器汇总"，`post()` 契约不变。

@@ -112,7 +112,7 @@ namespace net {
 std::unique_ptr<Net> create(Dispatcher&, Timer&, Ipc&);   // 资源出生（RAII）
 void listen(Net&, uint16_t port, PipeId events);          // 终端侧：accept 分配 ConnId、首挂读申请单
 void serve(Net&);                                         // 登记 RPC 处理器：客户端门面的对端半边
-void stop(Net&);                                          // 资源死：未决请求 kBroken 回填 → 关连接，之后一律拒绝
+void stop(Net&);                                          // 资源死：未决请求 kBroken 回填 → 关连接，之后门面调用一律拒绝（`live`）
 
 // ---- 客户端（任意进程，桩函数内部经 02 到 03；事件经 02 投回声明的管道） ----
 ConnId connect(Net&, const std::string& addr, uint8_t shape, PipeId events, uint64_t timeout_ns);
@@ -160,7 +160,7 @@ struct ConnRecord {           // 每连接一份，ConnHub：ConnId → ConnReco
 
 struct ConnHub { /* ConnId → ConnRecord + TerminalId 归属索引；一把锁护增删查 */ };
 
-struct ConnectTicket {        // 代跑档案：getaddrinfo + connect 阻塞体，完成 post() 回流（同 05 代跑机制）
+struct ConnectTicket {        // 代跑档案：getaddrinfo + connect 阻塞体（defer，同 05 代跑机制）
     ConnId      id;
     std::string addr;
 };
@@ -185,7 +185,7 @@ std::vector<std::byte>          pack_voice_block(TerminalId, VoiceMeta, std::spa
 // ===== 编排函数：带副作用，动词用命令式 =====
 
 void on_net_event(Net&, const Event&);       // inbox 消费者：with(ev, …) 按 Event.type 分流（见"与 01/02/04 的对接"）
-void on_read_done(Net&, const Event&);       // 读完成 → 按连接形分流：kFramed 喂分帧器 / kTextStream 直投文本块（with(rearm(…)) 包裹：exit = 重挂读单）
+void on_read_done(Net&, const Event&);       // 读完成 → 按连接形分流：kFramed 喂分帧器 / kTextStream 直投文本块（rearm）
 void on_write_done(Net&, const Event&);      // 写完成 → 释放发送缓冲
 void on_broken(Net&, const Event&);          // 传输错误 → kTypeNetDown + 出站进重连状态机
 void on_reconnect(Net&, ConnId);             // 退避到期（kTypeNetReconnect）→ with(defer(d)) 代跑 connect 重试
@@ -209,13 +209,13 @@ void drop_conn(Net&, ConnId, int32_t why);   // kTypeNetDown + 摘账关连接�
 | `close_conn(Net&, conn)` | 客户端 | 任意线程 | 主动关闭并停止自动重连 |
 | `send_message(Net&, OutgoingMessage)` | 客户端 | 任意线程 | 终端消息出站：装帧（JSON）按 `target` 投递；查无此终端回 `false` |
 | `send_voice(Net&, terminal, meta, pcm)` | 客户端 | 任意线程 | 语音出站：打包 `NetVoiceBlock` 写 02 数据面；环满回 `false` |
-| `stop(Net&)` | 进程内 | 停机时 | 未决请求 `kBroken` 回填 → 关连接；之后门面调用一律拒绝（返回 `false` / 断言） |
+| `stop(Net&)` | 进程内 | 停机时 | 未决请求 `kBroken` 回填 → 关连接；之后门面调用一律拒绝（`live`） |
 
 客户端半边是**桩函数**：签名与进程内门面一致，内部把调用编成 02 请求，事件由桩层翻回号段事件 `post` 到声明的管道——业务调用体验与进程内无异，"各门面分属不同进程，跨进程处经 02"。
 
 ### 客户端 RPC 映射（02 承载）
 
-门面调用编成 02 请求（body = JSON，nlohmann/json 序列化），`ipc::request`/`respond` 承载往返；入站事件以 `ipc::notify` 信封送达，桩层翻译投递。请求/响应语义、超时与销账全用 02 既有裁决（发送失败即销账、迟到响应丢弃并计数），03 不另立请求表。桩层 = `rpc` 切面壳（见 [../with.md](../with.md)）：组包、请求往返、超时销账、错误码翻译、事件翻号段投递全住切面，门面函数本体只写 op 与参数——03/06 客户端半边共用同一个壳。
+门面调用编成 02 请求（body = JSON，nlohmann/json 序列化），`ipc::request`/`respond` 承载往返；入站事件以 `ipc::notify` 信封送达，桩层翻译投递。请求/响应语义、超时与销账全用 02 既有裁决，03 不另立请求表。桩层 = `rpc` 切面壳（见 [../with.md](../with.md)）：组包、请求往返、超时销账、错误码翻译、事件翻号段投递全住切面，门面函数本体只写 op 与参数——03/06 客户端半边共用同一个壳。
 
 | 门面 | 02 载体 | 请求体（JSON） | 回程 |
 |---|---|---|---|
@@ -247,7 +247,7 @@ sequenceDiagram
     else event / command 帧
         NET->>C: to_event → kTypeNetMessage（经 02 notify → 桩层 post events 管道）
     end
-    Note over NET: 读完成即重挂，每连接常驻一张在飞
+    Note over NET: 读完成走 rearm
 ```
 
 ### 出站文本流流水线（LLM 形）
@@ -261,7 +261,7 @@ sequenceDiagram
     participant T as LLM 服务
 
     C->>NET: 桩 net::connect(addr, kTextStream, events, 5s)（经 02 request）
-    Note over NET: 代跑 getaddrinfo + connect（disp::submit）<br/>完成 post() 回流 kTypeNetConnectDone
+    Note over NET: 代跑 getaddrinfo + connect（disp::submit）<br/>defer 回流 kTypeNetConnectDone
     NET->>C: 响应 conn = 7 + kTypeNetUp → events
     C->>NET: 桩 net::send_text(7, "…")（经 02 request）
     NET->>L01: socket 写申请单经 01 代交
@@ -277,7 +277,7 @@ sequenceDiagram
 
 | 来源 | 事件 | 03 怎么处理 |
 |---|---|---|
-| 01 | `IoReadDone`（socket 读完成） | `on_read_done`：按连接形分流——`kFramed` 喂分帧器解帧，`kTextStream` 直接切段投 `kTypeNetText`；读完成即重挂 |
+| 01 | `IoReadDone`（socket 读完成） | `on_read_done`：按连接形分流——`kFramed` 喂分帧器解帧，`kTextStream` 直接切段投 `kTypeNetText`；读完成走 `rearm` |
 | 01 | `IoWriteDone`（socket 写完成） | `on_write_done`：释放发送缓冲；负错误码按传输层错误处理 |
 | 01 | `kTypeError`（传输层拦截） | `on_broken`：归纳成 `kTypeNetDown`（投 events 管道），出站进重连状态机 |
 | 01 线程池 | `kTypeNetConnectDone`（代跑 `post()` 回流） | `on_connect_done`：成功 = `kTypeNetUp` + 首挂读申请单；失败 = 下一档退避（挂 04） |
@@ -288,7 +288,7 @@ sequenceDiagram
 
 ```cpp
 void net::on_net_event(Net& n, const Event& ev) {
-    with(ev, {   // 机械：按 Event.type 查表分流，查无丢弃并计数
+    with(ev, {   // 机械：按 Event.type 查表分流
         {kTypeIoReadDone,     [&](const Event& e){ on_read_done(n, e); }},
         {kTypeIoWriteDone,    [&](const Event& e){ on_write_done(n, e); }},
         {kTypeError,          [&](const Event& e){ on_broken(n, e); }},
@@ -330,7 +330,7 @@ net::send_voice(net, T1, meta, pcm_bytes);   // TTS 产物回终端（PCM 不进
 - **号段**：03 占 200–299——200 文本块、201 消息、202/203 连接状态、204/205 内部（只回 03 自己的 inbox，业务看不到）；新增类型在本节扩展并出行（`EventDef` 声明即注册，策略随行出生，见 [../policy.md](../policy.md)）。
 - **线格式**：终端协议以「线格式」一节定死（收编 Architecture1，改动只有一处：`format` 固定 "pcm" 不再作字段）；帧头校验失败即断连——定界不可信，与 02 的 `kBadMagic` 同理；单帧 JSON 解析失败只丢该帧（帧界仍可信）。
 - **文本流**：出站连接按到达切段，03 不断句、不拼报文——断句（按行/SSE/长度前缀）归 06；`send_text` 即追加写，消息边界由 06 的字节流自己定。
-- **连接**：读写申请单经 01 代交（单提交者约定），每连接常驻一张读单（读完成即重挂、每连接一张在飞，`with(rearm(…))` 结构形）；`getaddrinfo`/`connect` 阻塞走 `disp::submit` 代跑、完成 `post()` 回流（`with(defer(…))` 结构形，同 05 代跑机制），不占申请单账本；出站断连自动重连（指数退避：档位 = `Backoff` 行，见 [../policy.md](../policy.md)，挂 04 的 `tmr::after`，到期 `kTypeNetReconnect` 回 `inbox`），`ConnId` 重连复用（同 02 的 `PeerId` 语义），`close_conn` 停止重连；终端侧不主动重连，每终端一条活连接、新连接顶掉旧的（旧的照发 `kTypeNetDown`）。
+- **连接**：读写申请单经 01 代交（单提交者约定），每连接常驻一张读单（`with(rearm(…))` 结构形）；`getaddrinfo`/`connect` 阻塞走 `disp::submit` 代跑、完成 `post()` 回流（`with(defer(…))` 结构形，同 05 代跑机制），不占申请单账本；出站断连自动重连（指数退避：档位 = `Backoff` 行，见 [../policy.md](../policy.md)，挂 04 的 `tmr::after`，到期 `kTypeNetReconnect` 回 `inbox`），`ConnId` 重连复用（同 02 的 `PeerId` 语义），`close_conn` 停止重连；终端侧不主动重连，每终端一条活连接、新连接顶掉旧的（旧的照发 `kTypeNetDown`）。
 - **语音双路**：终端语音（经本层）与本地声卡（05 流式）并存，业务选路；03 不混音、不做语音路由。语音大块一律 `NetVoiceBlock` 走 02 数据面（双向），不经 RPC、不进 JSON。
 - **错误两层**：不写分支——错误源的归属与处置是 `ErrPolicy` 行（见 [../policy.md](../policy.md)）：传输层（断连、读写失败、对端崩溃）走 01 的 `kTypeError` → 03 归纳成 `kTypeNetDown`，协议层就地处置（帧头非法断连、超长断连、JSON 解析失败丢帧 + 计数）；`intercept` 切面查行，库错误不抛上层。
 - **背压**：不写分支、写行——满时策略 = 契约块的 `EventDef` 行、环满策略 = [../media.md](../media.md) 块 qos 声明制（下表即行的文档形；理由写在表里，策略值只在行里出现一次）；socket 发送缓冲满按事件行分策略：
@@ -345,6 +345,6 @@ net::send_voice(net, T1, meta, pcm_bytes);   // TTS 产物回终端（PCM 不进
 - **请求/响应**：客户端门面走 02 既有语义——发送失败即销账（`kBroken`/`kBusy` 回填），超时与迟到响应由 02 的 `inbox` 裁决收口，03 不另立请求表。
 - **寻址**：`ConnId` 即 `SourceId`（域看 source）；事件管道注册时声明（`listen`/`connect` 的 `events` 参数），谁登记谁收货；跨进程投递 = 02 notify 信封，桩层翻号段事件 `post` 到声明的管道。
 - **线程安全**：03 进程内 `inbox` 消费单线程裁决（分帧、销账、投递串行，同 02 的销账裁决点）；门面任意线程可调（跨进程经 02，进程内照 01 的 `post()` 代交）；`ConnHub` 一把锁护增删查；分帧状态每连接单线程。
-- **生命周期**：`ConnId` 单调发号、连接存续期稳定（重连复用）；`TerminalId` 取自协议、归属索引随连接生死登记；`TcpPeer` RAII 管 fd，`NetVoiceBlock` 用完 `ipc::release`，禁裸 `new/delete`；库类型（fd、sockaddr、json 对象）不出模块边界。
-- **stop()**：未决客户端请求 `kBroken` 回填 → 关连接撤登记 → 释放；之后门面调用一律拒绝（返回 `false` / 断言）。
+- **生命周期**：`ConnId` 单调发号、连接存续期稳定（重连复用）；`TerminalId` 取自协议、归属索引随连接生死登记；`TcpPeer` RAII 管 fd，`NetVoiceBlock` 生命周期走 `block`，禁裸 `new/delete`；库类型（fd、sockaddr、json 对象）不出模块边界。
+- **stop()**：未决客户端请求 `kBroken` 回填 → 关连接撤登记 → 释放；之后门面调用一律拒绝（`live`）。
 - **优化预留**：TLS 后挂库薄壳（TcpPeer 换内胆，契约不变）；出站连接池/多路复用；HTTP/SSE 形文本流（仍走 `kTextStream`，断句归 06）；语音环多播（多消费者订阅同一终端语音时改复制/多播环，`NetVoiceBlock` 布局不变）；UDP/QUIC 二期。

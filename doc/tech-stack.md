@@ -43,7 +43,7 @@
 - 04 取堆顶到期时刻，`timerfd_settime(TFD_TIMER_ABSTIME, CLOCK_MONOTONIC)` 设时；timerfd 归 04（RAII），每进程一个、全部定时器共用；
 - 01 对该 fd 常驻一张 read 申请单：到期 fd 可读 → 读完成项照常从统一收货口出来 → `kTypeTimeout` 投 04 的 inbox；
 - 04 弹堆、投用户事件，按新堆顶重设 timerfd 并重挂 read 申请单；读回的过期计数（uint64）就是"跳过积压"的现成信号；
-- 动堆（改期/取消/暂停/恢复）= `timerfd_settime` 原子替换（堆空清零停表），读申请单不动——无在飞 SQE 撤销、无迟到完成项分支；机制句柄（堆内位置）由 Boost.Heap 的 `handle_type` 提供，语义句柄 `TimerHandle` 是 04 自己的单调发号（不出模块边界）。
+- 动堆（改期/取消/暂停/恢复）= `timerfd_settime` 原子替换，读申请单不动——无在飞 SQE 撤销、无迟到完成项分支；机制句柄（堆内位置）由 Boost.Heap 的 `handle_type` 提供，语义句柄 `TimerHandle` 是 04 自己的单调发号（不出模块边界）。
 
 ### 共享内存环形队列
 

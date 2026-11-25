@@ -26,7 +26,7 @@
 
 判据主序是**时延预算**（反射路径不过界），次序是**内核阻塞特性**（决定机制）；频率不是判据。上表即 policy.h 的 `DevicePolicy` 行（文档形）：类别 → 机制的映射是数据不是分支——`attach` 按类别出重载（`stio::attach(StreamSpec)` / `txio::attach(DeviceSpec)`），流式设备想走代跑、事务设备想走专用线程，编译不过。
 
-**事件型设备的两种落法**：事件型是发生驱动（我不请求、它自己来），与读数/动作的"发起 → 回执"形不同。归属统一事务进程（常驻读申请单的延迟是 μs 级事件循环延迟，反射预算无忧，不需要第三堵墙），机制按总线定：可 poll 的（GPIO 边沿、evdev）挂**常驻读申请单**，边沿即完成项、直入 01 收货口（与 02 的 UDS 常驻读单同构：读完成即重挂、每设备一张在飞）；阻塞轮询的（I2C 电容触摸）挂 `txio::watch` 周期订阅。两路事件统一翻 `kTypeDeviceEvent`。
+**事件型设备的两种落法**：事件型是发生驱动（我不请求、它自己来），与读数/动作的"发起 → 回执"形不同。归属统一事务进程（常驻读申请单的延迟是 μs 级事件循环延迟，反射预算无忧，不需要第三堵墙），机制按总线定：可 poll 的（GPIO 边沿、evdev）挂**常驻读申请单**，边沿即完成项、直入 01 收货口（与 02 的 UDS 常驻读单同构，`rearm`）；阻塞轮询的（I2C 电容触摸）挂 `txio::watch` 周期订阅。两路事件统一翻 `kTypeDeviceEvent`。
 
 ## 数据结构
 
@@ -45,7 +45,7 @@ inline constexpr EventDef kTypeActuatorDone{451, kDev, Qos::kBlock};     // 动�
 inline constexpr EventDef kTypeDeviceEvent {452, kDev, Qos::kBlock};     // 事件型设备事件（负载 = DeviceEventInfo："发生了什么"，区别于 450 "读数"）
 
 using DeviceId = uint32_t;   // 设备编号：attach() 分配，兼任 SourceId（域看 source），0 = 无效
-using IoId     = uint64_t;   // 事务/订阅申请单号：read/command/watch 返回，cancel 用；单调发号，0 = 无效
+using IoId     = uint64_t;   // 事务/订阅申请单号：read/command/watch 返回，cancel 用；ticket 发号，0 = 无效
 
 constexpr uint8_t kStream      = 1;   // 流式设备
 constexpr uint8_t kTransaction = 2;   // 事务型设备
@@ -127,7 +127,7 @@ std::unique_ptr<StreamIo> create(Dispatcher&, Ipc&);   // 资源出生（RAII）
 DeviceId attach(StreamIo&, const StreamSpec&, PipeId events);  // 挂接一条流（mic 或 speaker），events 收 411/412/403
 bool     start(StreamIo&, DeviceId);      // 启流：采集开读 / 播放开写
 void     detach(StreamIo&, DeviceId);     // 停流并摘除
-void     stop(StreamIo&);                 // 资源死：停线程 → 摘流 → 注销 02 挂接，之后门面调用一律拒绝
+void     stop(StreamIo&);                 // 资源死：停线程 → 摘流 → 注销 02 挂接，之后门面调用一律拒绝（`live`）
 }
 ```
 
@@ -143,8 +143,8 @@ IoId     read(TxnIo&, DeviceId, uint32_t channel, PipeId reply);   // 单次读 
 IoId     command(TxnIo&, const ActuatorCommand&, PipeId reply);    // 动作 → kTypeActuatorDone 投 reply
 IoId     watch(TxnIo&, DeviceId, uint32_t channel, uint64_t period_ns, PipeId reply); // 周期订阅（04 every 驱动）
 IoId     watch_edge(TxnIo&, DeviceId, PipeId reply);  // 事件型订阅（可 poll）：常驻读申请单，边沿即 kTypeDeviceEvent
-bool     cancel(TxnIo&, IoId);         // 撤订阅或在飞事务（按号查表）：模板作废，迟到完成丢弃并计数
-void     stop(TxnIo&);                 // 资源死：撤订阅/看门狗 → 等在飞结清 → 关句柄，之后门面调用一律拒绝
+bool     cancel(TxnIo&, IoId);         // 撤订阅或在飞事务（按号查表）：模板作废（迟到完成走 settle）
+void     stop(TxnIo&);                 // 资源死：撤订阅/看门狗 → 等在飞结清 → 关句柄，之后门面调用一律拒绝（`live`）
 }
 ```
 
@@ -222,8 +222,8 @@ namespace stio {   // 门面 attach/start/detach 的实现体即编排
 Event make_xrun_event(const StreamRecord&, uint64_t xruns, uint64_t now_ns);
 
 // ===== 编排函数：带副作用，动词用命令式 =====
-void capture_loop(StreamRecord&, Ipc&);   // wait → readi → ipc::write_data（with(backpressure(…))：环满丢旧留新 + 计数）
-void playback_loop(StreamRecord&, Ipc&);  // with(block(…)) 消费 02 数据面块 → writei → exit release() → 回执 notify
+void capture_loop(StreamRecord&, Ipc&);   // 采集：wait → readi → 写环（backpressure）
+void playback_loop(StreamRecord&, Ipc&);  // 播放（block）：消费 02 数据面块 → writei → 回执 notify
 void on_xrun(StreamRecord&, Ipc&, int err); // recover + kTypeStreamXrun 投 events；不可恢复翻 kTypeDeviceDead
 }
 
@@ -234,11 +234,11 @@ std::expected<SensorSample, int32_t>  do_sample(const DeviceRecord&, uint32_t ch
 std::expected<ActuatorResult, int32_t> do_action(const DeviceRecord&, const ActuatorCommand&); // 同上
 
 // ===== 编排函数：带副作用，动词用命令式 =====
-void run_ticket(TxnIo&, IoTicket&);       // 代跑体：with(defer(d)) 包裹——阻塞 ioctl（本体）→ 完成 post() 回流
-void on_ticket_done(TxnIo&, IoId, /*结果*/); // 完成回流：with(settle(…)) 汇结案（撤看门狗 + 摘账恒一次）→ 本体只投 kTypeSensorSample / kTypeActuatorDone
+void run_ticket(TxnIo&, IoTicket&);       // 代跑体（defer）：阻塞 ioctl
+void on_ticket_done(TxnIo&, IoId, /*结果*/); // 完成回流（settle）：投 kTypeSensorSample / kTypeActuatorDone
 void on_watchdog(TxnIo&, IoId);           // 超时（settle 拒绝路径之一）：置死设备 + kTypeDeviceDead + 拒新单
 void on_sample_tick(TxnIo&, IoId);        // 04 every 到期 → 组单代跑（订阅续期归 04）
-void on_edge_done(TxnIo&, IoId);          // 边沿读完成：with(rearm(…)) 包裹——本体翻 kTypeDeviceEvent，exit = 重挂（每设备一张在飞）
+void on_edge_done(TxnIo&, IoId);          // 边沿读完成（rearm）：翻 kTypeDeviceEvent
 }
 ```
 
@@ -259,8 +259,8 @@ void on_edge_done(TxnIo&, IoId);          // 边沿读完成：with(rearm(…)) 
 | `txio::command(cmd, reply)` | 事务 | 任意线程 | 组单代跑，完成以 `kTypeActuatorDone` 投 `reply` |
 | `txio::watch(dev, channel, period, reply)` | 事务 | 任意线程 | 周期订阅：04 `every` 到期触发代跑读，读数投 `reply` |
 | `txio::watch_edge(dev, reply)` | 事务 | 任意线程 | 事件型订阅（可 poll）：常驻读申请单，边沿以 `kTypeDeviceEvent` 投 `reply` |
-| `txio::cancel(id)` | 事务 | 任意线程 | 撤订阅或在飞事务：模板作废、迟到完成丢弃并计数 |
-| `stio::stop / txio::stop` | 各自 | 停机时 | 资源死（见规则"stop()"）；之后门面调用一律拒绝 |
+| `txio::cancel(id)` | 事务 | 任意线程 | 撤订阅或在飞事务：模板作废（迟到走 `settle`） |
+| `stio::stop / txio::stop` | 各自 | 停机时 | 资源死（见规则"stop()"）；之后门面调用一律拒绝（`live`） |
 
 ### 流式侧流水线（音频进音频出）
 
@@ -291,21 +291,21 @@ flowchart LR
     DEV --> POOL
 ```
 
-发起侧的标准形——守护、单据与看门狗、代跑三个 `Aspect` 值一次平铺，本体只剩业务（`ticket` 的 state 挂 `OpPolicy` 行 = 看门狗来源；exit 在完成/超时/断连哪条路收尾都恰好结案一次）：
+发起侧的标准形——守护、单据与看门狗、代跑三个 `Aspect` 值一次平铺，本体只剩业务（`ticket` 的 state 挂 `OpPolicy` 行 = 看门狗来源）：
 
 ```cpp
 IoId txio::read(TxnIo& io, DeviceId dev, uint32_t ch, PipeId reply) {
-    return with(live(io),                                          // 机械：stop 后拒绝
-                ticket(io.tickets, {.dev = dev, .reply = reply}, kOpTxIo,   // 机械：登记 + 挂 04 看门狗（行显式传入）
+    return with(live(io),                                          // live
+                ticket(io.tickets, {.dev = dev, .reply = reply}, kOpTxIo,   // ticket：登记本单
                        io.timer, 看门狗时长(dev), 超时模板),
-                defer(io.d),                                       // 机械：阻塞本体进线程池，完成 post() 回流
+                defer(io.d),                                       // defer
                 [&](IoTicket& tk) {
         return do_sample(io.devices[dev], ch);                     // 业务：阻塞读
-    });   // ticket 的 exit（settle 结案时恰好一次）：撤看门狗 + 摘账，归零才许销毁
+    });
 }
 ```
 
-事件型（`watch_edge`）不经代跑：常驻读申请单由 01 直接收割，边沿完成即 `kTypeDeviceEvent`，随即重挂（`with(rearm(…))` 的 exit）；不挂看门狗——等待是常态，不返回不是事故。
+事件型（`watch_edge`）不经代跑：常驻读申请单由 01 直接收割，边沿完成即 `kTypeDeviceEvent`，随即 `rearm` 重挂；不挂看门狗——等待是常态，不返回不是事故。
 
 ### 与 01/02/04 的对接
 
@@ -339,7 +339,7 @@ IoId id = txio::read（*io, 体温计，/*channel=*/0, 温度管道）;
 |---|---|---|---|
 | 1 | 业务调 `txio::read()` | 组 `IoTicket` + 挂 04 看门狗 | `disp::submit` 代跑 |
 | 2 | 代跑线程读完成 | `post()` 回流 | 撤看门狗、摘账、投 `kTypeSensorSample` |
-| 2′ | （卡死）看门狗到期 | `on_watchdog` | 设备置死 + `kTypeDeviceDead`，迟到完成丢弃并计数 |
+| 2′ | （卡死）看门狗到期 | `on_watchdog` | 设备置死 + `kTypeDeviceDead`，迟到完成走 `settle` |
 
 没事发生时事务侧无在飞单不占线程；流式侧睡在 `wait` 里，按节拍醒。
 
@@ -361,8 +361,8 @@ IoId id = txio::read（*io, 体温计，/*channel=*/0, 温度管道）;
 - **边界判据**：时延预算主序、内核阻塞特性次序，频率不是判据；新设备按「设备分类判据」入座，跨类别的先改判据表再落契约。
 - **流式通道（对 01 的显式例外）**：采集/播放线程直跑 ALSA（`wait` 就绪 → `readi/writei`），块经 02 数据面零拷贝过进程，**不占 01 申请单账本**——流式定长节拍绕 ring 只加抖动；01 的 `submit_op` 账本留给需要生命周期管理的申请单（02 控制面的 UDS 读写、05 事件型设备的常驻读申请单等）；事务型设备的调用走 `submit` 代跑、不占账本。例外只在"读写怎么发"，事件回流仍一律 `post()` 过统一收货口。
 - **代跑机制**：事务侧阻塞 ioctl 一律 `disp::submit` 代跑 + `post()` 完成回流——I2C/SPI 的 ioctl 不可 poll，"Reactor 等就绪"挡不住内核阻塞，不采用；代跑体里只许做阻塞调用与 `post()` 回流，不碰 02/04 门面（副作用收敛在 inbox 消费线程）；同设备事务由账本串行，防 ioctl 交错。
-- **事件型设备**：发生驱动的入口是订阅形（`watch_edge`/`watch`），不是请求形；可 poll 型（GPIO 边沿、evdev）挂常驻读申请单——`OpKind::DeviceIo` 的正主，与 02 的 UDS 常驻读单同构（读完成即重挂、每设备一张在飞），阻塞轮询型（I2C 电容）挂 `watch`；事件统一翻 `kTypeDeviceEvent`（`code` 弱类型，语义归设备文档）。
-- **看门狗**：不写"挂不挂"的分支——超时参数与处置是 `OpPolicy` 行（事务默认 500ms 置死 / 事件型常驻读单无超时，见 [../policy.md](../policy.md)），行指针挂进 `ticket` 的 `Aspect.state`，`ticket`/`settle` 切面查行挂撤（挂 = ticket 的 enter，撤 = settle 的 exit，恰好一次）；超时 = 置死设备 + `kTypeDeviceDead` 上报 + 拒新单，迟到完成丢弃并计数（`settle` 拒绝路径）；恢复只走 detach/attach 重开或进程重启（主进程拉起），不做原地自愈。
+- **事件型设备**：发生驱动的入口是订阅形（`watch_edge`/`watch`），不是请求形；可 poll 型（GPIO 边沿、evdev）挂常驻读申请单——`OpKind::DeviceIo` 的正主，与 02 的 UDS 常驻读单同构（`rearm`），阻塞轮询型（I2C 电容）挂 `watch`；事件统一翻 `kTypeDeviceEvent`（`code` 弱类型，语义归设备文档）。
+- **看门狗**：不写"挂不挂"的分支——超时参数与处置是 `OpPolicy` 行（事务默认 500ms 置死 / 事件型常驻读单无超时，见 [../policy.md](../policy.md)），行指针挂进 `ticket` 的 `Aspect.state`，挂撤由 `ticket`/`settle` 查行；超时 = 置死设备 + `kTypeDeviceDead` 上报 + 拒新单（迟到完成走 `settle`）；恢复只走 detach/attach 重开或进程重启（主进程拉起），不做原地自愈。
 - **时延预算**：
 
 | 路径 | 预算 | 归属 |
@@ -374,7 +374,7 @@ IoId id = txio::read（*io, 体温计，/*channel=*/0, 温度管道）;
 | 体温 / 呼吸 | 秒级 | 事务 |
 
 - **线程安全**：`stio`/`txio` 门面任意线程可调；采集/播放线程只碰自己的 `PcmStream` 与 02 数据面；事务侧账本一把锁多写单读（调用线程登记、inbox 消费线程销账）；libperiphery 句柄只在代跑线程用。
-- **生命周期**：数据面块视图用完必须 `release()`（02 语义照旧）；`IoTicket` 在飞计数归零才许销毁，禁裸 `new/delete`；流线程 `jthread` RAII，`stop()` 时 join。
+- **生命周期**：数据面块视图走 `block`（02 语义照旧）；`IoTicket` 生死走 `ticket`，禁裸 `new/delete`；流线程 `jthread` RAII，`stop()` 时 join。
 - **错误拦截**：不写分支——错误源的归属与处置是 `ErrPolicy` 行（ALSA xrun 就地 `recover` + 计数 / ALSA 不可恢复置死 / libperiphery 负码翻 `ActuatorResult.status` 或置死，见 [../policy.md](../policy.md)）；`intercept` 切面查行，库错误不抛上层。
-- **stop()**：停流停线程 → 撤订阅/看门狗 → 在飞事务标记取消、等结清 → 摘设备关句柄 → 注销 02 挂接；之后门面调用一律拒绝（返回 `false` / 断言）。
+- **stop()**：停流停线程 → 撤订阅/看门狗 → 在飞事务标记取消、等结清 → 摘设备关句柄 → 注销 02 挂接；之后门面调用一律拒绝（`live`）。
 - **优化预留**：子进程直连（02）；播放侧环深度自适应；事件型设备绑核直入流式侧（反射预算收紧到 ms 级时启用）。
