@@ -164,7 +164,7 @@ void disp::run(Dispatcher& d) {
         unsigned head = 0, n = 0;
         uint64_t now_ns = clock_ns();                   // 每圈取一次时钟，整批同刻
         d.ring.for_each_cqe(head, [&](const Cqe& c) {  // ③ 批量收割
-            with(settle(d.ops, *(OpCtx*)c.user_data), [&](OpCtx& ctx) {  // 机械：票根找回 + 取消丢弃 + 结案恒一次
+            with(settle(d.ops, *(OpCtx*)c.user_data, 该单的 OpPolicy 行), [&](OpCtx& ctx) {  // 机械：票根找回 + 取消丢弃 + 结案恒一次
                 if (auto ev = translate(c, ctx, now_ns))                // 业务：翻译定形 + 错误拦截
                     enqueue_event(d, std::move(*ev));                   // 业务：入队（背压判定套在入队点，见下）
             });

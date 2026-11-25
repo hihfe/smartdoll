@@ -201,4 +201,4 @@ struct Backoff {
 - **策略只增行不增分支**：编排代码里长出按 type/类别选处置的 `if`（丢旧留新还是阻塞？挂不挂看门狗？断连还是丢帧？）即违规——搬进注册表成行，代码只查表。
 - **行随契约出生**：新增事件/单据/错误源 = 契约块里出行（`EventDef` 常量即行），不出行就定义不出来；改行 = 改契约，过号段主人评审。
 - **散文只写理由**：模块规则里保留"为什么"（如"文本流丢块即报文坏"），"是什么"（阻塞/丢弃计数/留最新）只在行里出现一次。
-- **切面查表不判策略**：[with.md](with.md) 的切面只做机械（进/出/计数），策略值一律以**行指针挂进切面的 `Aspect.state`**（`backpressure` 挂 `EventDef.qos`、`ticket` 挂 `OpPolicy`、`intercept` 挂 `ErrPolicy`）——机制与数据分家，两边都可单测。
+- **切面查表不判策略**：[with.md](with.md) 的切面只做机械（进/出/计数），策略值一律以**行指针挂进切面的 `Aspect.state`**（`backpressure` 挂 `EventDef.qos`、`ticket`/`settle` 挂 `OpPolicy`、`intercept` 挂 `ErrPolicy`），行随签名显式传入、切面内不隐式查表——机制与数据分家，两边都可单测。

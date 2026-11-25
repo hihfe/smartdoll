@@ -296,7 +296,7 @@ flowchart LR
 ```cpp
 IoId txio::read(TxnIo& io, DeviceId dev, uint32_t ch, PipeId reply) {
     return with(live(io),                                          // 机械：stop 后拒绝
-                ticket(io.tickets, {.dev = dev, .reply = reply},   // 机械：登记 + 挂 04 看门狗
+                ticket(io.tickets, {.dev = dev, .reply = reply}, kOpTxIo,   // 机械：登记 + 挂 04 看门狗（行显式传入）
                        io.timer, 看门狗时长(dev), 超时模板),
                 defer(io.d),                                       // 机械：阻塞本体进线程池，完成 post() 回流
                 [&](IoTicket& tk) {

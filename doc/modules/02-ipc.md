@@ -234,7 +234,7 @@ void      close_peer(Ipc&, PeerId);               // 未决请求 kBroken 回填
 
 ```cpp
 RequestId ipc::request(Ipc& ip, PeerId to, IpcMessage msg, PipeId reply, uint64_t timeout_ns) {
-    return with(live(ip), ticket(ip.pending, {to, reply}, ip.timer, timeout_ns, 超时模板),  // 机械：stop 后拒绝 + 登记/挂超时
+    return with(live(ip), ticket(ip.pending, {to, reply}, kOpIpcRequest, ip.timer, timeout_ns, 超时模板),  // 机械：stop 后拒绝 + 登记/挂超时
                 [&](auto& e) {
         return 发帧(ip, to, msg, e.id);                        // 业务：编解码 + 写（发送失败即销账 = exit 提前）
     });   // ticket 的 exit：结案销账 + 撤超时——响应先到/超时先到/断连/发送失败哪条路收尾都恰好一次
