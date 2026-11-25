@@ -1,6 +1,6 @@
 # 03 网络（Network）
 
-> 自底向上第三层（M1 子进程层，与 05 并列）：网络域，一份文档、一个进程——**全部外部 socket 的唯一出口**，服务两类对端：**终端**（server 侧，线格式）与**出站服务**（client 侧，文本流，LLM 等）。本层只管"字节怎么走、连接活不活"：报文语义归 06，路由归 M2，本地声卡归 [05](./05-device-io.md)。线格式（收编 [../Architecture1.md](../Architecture1.md)）、号段 200–299、客户端 RPC 契约在本模块定死；事件循环与投递归 [01](./01-dispatcher.md)，IPC 归 [02](./02-ipc.md)，定时语义归 [04](./04-timer.md)；选型（原生 socket + nlohmann/json）见 [../tech-stack.md](../tech-stack.md)。
+> 自底向上第三层（M1 子进程层，与 05 并列）：网络域，一份文档、一个进程——**全部外部 socket 的唯一出口**，服务两类对端：**终端**（server 侧，线格式）与**出站服务**（client 侧，文本流，LLM 等）。本层只管"字节怎么走、连接活不活"：报文语义归 06，路由归 M2，本地声卡归 [05](./05-device-io.md)。线格式、号段 200–299、客户端 RPC 契约在本模块定死；事件循环与投递归 [01](./01-dispatcher.md)，IPC 归 [02](./02-ipc.md)，定时语义归 [04](./04-timer.md)；选型（原生 socket + nlohmann/json）见 [../tech-stack.md](../tech-stack.md)。
 
 ## 职责
 
@@ -8,14 +8,14 @@
 
 1. **定义契约**：`ConnId`/`TerminalId`、终端线格式与消息结构、文本流块 `NetText`、语音环块 `NetVoiceBlock` 与 `net::` 门面自由函数；上层只见契约与门面，不见 socket/fd/分帧状态、不见类。
 2. **连接管理**：终端侧 `listen`/`accept`，出站侧 `connect`（供 LLM 等）；每连接独立分帧状态与读写缓冲；出站断连自动重连（指数退避挂 04）；终端按 `TerminalId` 记归属，每终端一条活连接。
-3. **终端线格式与分帧**：收编 Architecture1 帧布局（12B 大端帧头 + JSON + 裸 PCM）；粘包/半包攒帧、帧头先校验、长度上限防骗分配。
+3. **终端线格式与分帧**：帧布局（12B 大端帧头 + JSON + 裸 PCM）；粘包/半包攒帧、帧头先校验、长度上限防骗分配。
 4. **文本流门面（经 02 RPC）**：`connect`/`send_text`/`close_conn` 供 06 的 LLM 子组件等调用；入站按到达切段投文本块，**不断句、不拼报文**。
 5. **编解码与投递**：终端 `MessageHeader`/`MessageBody` ↔ `Frame`（nlohmann/json）；语音不进 JSON——元数据 + PCM 打包 `NetVoiceBlock` 走 02 数据面；入站翻语义事件（200–299）投登记管道，出站按 `target` 投对应终端。
 6. **错误与背压**：两层错误语义（01 拦传输层 → 03 归纳连接状态）；发送失败即销账；语音块丢旧留新 + 计数，文本块/消息/状态关键阻塞。
 
-**不负责**：LLM/ASR/TTS 协议语义（归 06——ASR/TTS 是本地推理（sherpa-onnx）不经本层，LLM 只经本层收发字节）；路由/转发决策（归 M2，Architecture1 的 `RouteDecision` 不上线格式、不进本层）；本地声卡 IO（05）；01/02/04/05 机制本体；TLS/HTTP 等安全与应用层协议（二期，见规则"优化预留"）。
+**不负责**：LLM/ASR/TTS 协议语义（归 06——ASR/TTS 是本地推理（sherpa-onnx）不经本层，LLM 只经本层收发字节）；路由/转发决策（归 M2，不上线格式、不进本层）；本地声卡 IO（05）；01/02/04/05 机制本体；TLS/HTTP 等安全与应用层协议（二期，见规则"优化预留"）。
 
-## 线格式（终端协议，收编 Architecture1）
+## 线格式（终端协议）
 
 ```
 [4B total_len（大端）]        // = 12 + json_len + audio_len
@@ -29,7 +29,7 @@
 - 校验 `total_len == 12 + json_len + audio_len`；`json_len`/`audio_len` 设上限，超限即断连，防畸形长度骗巨额分配。
 - JSON 不含音频字节，PCM 挂帧尾；出站帧 JSON 顶层含 `target`（终端 ID），网络层消费后投递，入站帧不含。
 - **帧头校验失败即断连**——定界不可信，与 02 的 `kBadMagic` 同理；单帧 JSON 解析失败丢弃该帧（帧界仍可信），字节不流入消息层。
-- 语音元数据 `VoiceMeta` 语义沿用 Architecture1；`format` 固定 "pcm"，不再作字段。
+- 语音元数据 `VoiceMeta`：`format` 固定 "pcm"，不作字段。
 
 ## 数据结构
 
@@ -49,7 +49,7 @@ inline constexpr EventDef kTypeNetConnectDone{205, kNet, Qos::kBlock};  // 内�
 
 using ConnId     = uint64_t;   // 连接编号：accept/connect 分配，重连复用（同 02 的 PeerId 语义），0 = 无效；
                                // 兼任 SourceId（03 域约定，域看 source）
-using TerminalId = uint32_t;   // 终端编号 = Architecture1 的 source/target_id；每终端一条活连接，0 = 无效
+using TerminalId = uint32_t;   // 终端编号 = 消息的 source/target 标识；每终端一条活连接，0 = 无效
 
 constexpr uint8_t kTextStream = 1;   // 连接形：文本流，不拼报文（LLM 等）
 constexpr uint8_t kFramed     = 2;   // 连接形：线格式，分帧收发（终端）
@@ -59,7 +59,7 @@ struct NetText {              // kTypeNetText 负载
     std::string chunk;        // UTF-8 文本段：按到达切段，断句归 06（按行/SSE 自己拼）
 };
 
-struct VoiceMeta {            // 语音元数据：线上进 JSON（Architecture1 语义）
+struct VoiceMeta {            // 语音元数据：线上进 JSON
     uint32_t sample_rate;     // Hz
     uint16_t channels;
     uint16_t bits_per_sample;
@@ -67,7 +67,7 @@ struct VoiceMeta {            // 语音元数据：线上进 JSON（Architecture
     uint8_t  is_final;        // 整句结束标志（非块结束标志）
 };
 
-// ===== 终端消息契约（收编 Architecture1 消息层；voice 不入消息事件，走数据面） =====
+// ===== 终端消息契约（voice 不入消息事件，走数据面） =====
 struct MessageHeader {
     std::string source;       // 来源标识（终端 ID）
     std::string msg_type;     // "event" / "command"
@@ -83,7 +83,7 @@ struct NetMessage {           // kTypeNetMessage 负载：线格式已解好，�
     MessageBody   body;
 };
 
-struct OutgoingMessage {      // 出站消息（send_message 参数）：Architecture1 的出站形态
+struct OutgoingMessage {      // 出站消息（send_message 参数）
     TerminalId    target;     // 线格式顶层 "target"，网络层据此投递
     MessageHeader header;
     MessageBody   body;
@@ -126,7 +126,7 @@ bool   send_voice(Net&, TerminalId, VoiceMeta, std::span<const std::byte>);  // 
 ```cpp
 // ===== net.cc：内部类型（实现文件） =====
 
-struct FrameHeader {          // 线格式帧头：12 字节，全大端（Architecture1 定死）
+struct FrameHeader {          // 线格式帧头：12 字节，全大端
     uint32_t total_len;       // = 12 + json_len + audio_len
     uint32_t json_len;
     uint32_t audio_len;
@@ -328,7 +328,7 @@ net::send_voice(net, T1, meta, pcm_bytes);   // TTS 产物回终端（PCM 不进
 - **门面准入**：新操作先问能否用既有门面组合实现——能则写成门面语法糖（参数适配、无新不变量），不能才新增门面原语；门面只增原语，不增类方法（演进防火墙）。
 - **机械性切面**：与业务无关且重复的机械动作一律 `with(切面…, 本体)` 包裹（切面 = `Aspect` 数据形：state 挂机械状态与策略行，见 [../with.md](../with.md)）——门面 `live`、客户端桩壳 `rpc`、常驻读单 `rearm`、代跑 `defer`、背压 `backpressure`、inbox 分流 `with(ev, …)`；"读完成必重挂""用完必 release"等顺序条款由切面吸收；新增机械动作先过切面准入（工厂 + 参数审查）。
 - **号段**：03 占 200–299——200 文本块、201 消息、202/203 连接状态、204/205 内部（只回 03 自己的 inbox，业务看不到）；新增类型在本节扩展并出行（`EventDef` 声明即注册，策略随行出生，见 [../policy.md](../policy.md)）。
-- **线格式**：终端协议以「线格式」一节定死（收编 Architecture1，改动只有一处：`format` 固定 "pcm" 不再作字段）；帧头校验失败即断连——定界不可信，与 02 的 `kBadMagic` 同理；单帧 JSON 解析失败只丢该帧（帧界仍可信）。
+- **线格式**：终端协议以「线格式」一节定死（`format` 固定 "pcm"，不作字段）；帧头校验失败即断连——定界不可信，与 02 的 `kBadMagic` 同理；单帧 JSON 解析失败只丢该帧（帧界仍可信）。
 - **文本流**：出站连接按到达切段，03 不断句、不拼报文——断句（按行/SSE/长度前缀）归 06；`send_text` 即追加写，消息边界由 06 的字节流自己定。
 - **连接**：读写申请单经 01 代交（单提交者约定），每连接常驻一张读单（`with(rearm(…))` 结构形）；`getaddrinfo`/`connect` 阻塞走 `disp::submit` 代跑、完成 `post()` 回流（`with(defer(…))` 结构形，同 05 代跑机制），不占申请单账本；出站断连自动重连（指数退避：档位 = `Backoff` 行，见 [../policy.md](../policy.md)，挂 04 的 `tmr::after`，到期 `kTypeNetReconnect` 回 `inbox`），`ConnId` 重连复用（同 02 的 `PeerId` 语义），`close_conn` 停止重连；终端侧不主动重连，每终端一条活连接、新连接顶掉旧的（旧的照发 `kTypeNetDown`）。
 - **语音双路**：终端语音（经本层）与本地声卡（05 流式）并存，业务选路；03 不混音、不做语音路由。语音大块一律 `NetVoiceBlock` 走 02 数据面（双向），不经 RPC、不进 JSON。
