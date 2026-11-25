@@ -1,12 +1,12 @@
 # 机械性切面（with.h）
 
-> 与业务无关的机械动作的唯一收容处——**纯头文件：没有实现、没有进程、不占模块号**，各模块共同可见（同 [media.md](media.md) 形态）。**lambda 模拟 AOP around**：业务住 lambda（本体），机械住切面；切面 = 统一 `Aspect` 数据形，`with（切面…, 本体）` 一次平铺、不嵌套。
+> 与业务无关的机械动作的唯一收容处——**纯头文件：没有实现、没有进程、不占模块号**，各模块共同可见（同 [media.md](./media.md) 形态）。**lambda 模拟 AOP around**：业务住 lambda（本体），机械住切面；切面 = 统一 `Aspect` 数据形，`with（切面…, 本体）` 一次平铺、不嵌套。
 
 ## 为什么单独立库
 
 - 机械动作（守护、登记/结案、超时挂撤、读单重挂、代跑回流、错误拦截、背压）在各模块复写，改一处漏一处；且带硬顺序（先翻译后结账、完成必撤超时、动堆必重设、用完必 release），靠规则 + 记性维持，漏一处 = 空醒、死条目、槽位泄漏。
 - `with` 把顺序变成结构：机械住 enter/exit，**exit 恒执行且恰好一次**——完成 / 超时 / 断连 / 取消几条收尾路的竞态收敛到同一 exit。
-- 切面成数据（`Aspect`）：可存表、可按 `name` 观测计数；策略值以行指针挂进 state（见 [policy.md](policy.md)），机制与数据分家。
+- 切面成数据（`Aspect`）：可存表、可按 `name` 观测计数；策略值以行指针挂进 state（见 [policy.md](./policy.md)），机制与数据分家。
 
 ## 契约（with.h）
 
@@ -79,7 +79,7 @@ template <Ledger Tab, class Key> Aspect settle(Tab& tab, Key&& key, const OpPoli
 - **切面 = 数据**：统一 `Aspect`（state + enter + exit + name），一律工厂产出、不收裸函数对；state 禁业务数据（业务数据住 lambda 捕获）。
 - **工厂参数审查**：新切面必出工厂 + `requires`/`static_assert`（策略行类别对、表/条目类型匹配、句柄非零），错挂错配编译不过。
 - **顺序条款结构化**：先翻译后结账、完成必撤超时、动堆必重设、用完必 release、读完成必重挂、stop 后拒绝——全由切面吸收，模块规则改指切面、不再罗列步骤。
-- **切面查表不判策略**：策略值以行指针挂 `Aspect.state`（`backpressure`→`EventDef`、`ticket`/`settle`→`OpPolicy`、`intercept`→`ErrPolicy`，见 [policy.md](policy.md)）；**行指针一律显式作参**——查行的切面签名必收行（错类别编译不过），工厂内不隐式查注册表，调用点传哪个行一眼可见。
+- **切面查表不判策略**：策略值以行指针挂 `Aspect.state`（`backpressure`→`EventDef`、`ticket`/`settle`→`OpPolicy`、`intercept`→`ErrPolicy`，见 [policy.md](./policy.md)）；**行指针一律显式作参**——查行的切面签名必收行（错类别编译不过），工厂内不隐式查注册表，调用点传哪个行一眼可见。
 - **平铺即组合**：多切面一次平铺（形如 `with(ticket(…), settle(…), lambda)`），禁嵌套；仅当切面参数依赖本体产出的量（背压要等事件造出）才就地二起 `with`——该点收进内脏编排函数（如 01 的 `enqueue_event`）。
 - **与 RAII / 纯函数分工**：RAII 管资源生死，`with` 管一次动作的前后置；判定类内脏（`should_drop`、`translate`）仍是纯函数、被切面调用。
 - **切面只增机械**：切面里长出业务分支即出库；演进只许收紧顺序与计数（演进防火墙）。

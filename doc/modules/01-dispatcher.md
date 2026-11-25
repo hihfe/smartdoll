@@ -150,7 +150,7 @@ void dispatch_to_pipes(Dispatcher& d);    // 排空队列 → with(backpressure(
 
 各门面实现体一律以 `with(live(d), …)` 起手——"stop 后一律拒绝"不靠每个函数自查（`live` 切面见 [../with.md](../with.md)）。
 
-**单提交者**：io_uring 申请单只由事件循环线程经 `submit_op()` 提交；其他线程要发起申请单一律 `post()`，由循环代交。并发提交由 moodycamel 队列接住。阻塞型设备调用不经申请单：走 `submit()` 进线程池代跑、完成后 `post()` 回流（05 事务侧，见 [05](05-device-io.md)）；事件型设备的常驻读申请单照常经 `submit_op`。
+**单提交者**：io_uring 申请单只由事件循环线程经 `submit_op()` 提交；其他线程要发起申请单一律 `post()`，由循环代交。并发提交由 moodycamel 队列接住。阻塞型设备调用不经申请单：走 `submit()` 进线程池代跑、完成后 `post()` 回流（05 事务侧，见 [05](./05-device-io.md)）；事件型设备的常驻读申请单照常经 `submit_op`。
 
 ### 收割循环
 

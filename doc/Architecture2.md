@@ -82,7 +82,7 @@ flowchart TD
 
 ### 技术选型
 
-见 [tech-stack.md](tech-stack.md)。底座力学件（io_uring 事件源、无锁队列、线程池、时间堆）全部使用开源库，自研代码只做编排与业务。
+见 [tech-stack.md](./tech-stack.md)。底座力学件（io_uring 事件源、无锁队列、线程池、时间堆）全部使用开源库，自研代码只做编排与业务。
 
 ### 业务逻辑
 
@@ -123,7 +123,7 @@ flowchart TD
 | M2 业务层 | 对话分支 | modules/biz-dialog.md | ⬜ |
 | M2 业务层 | 仿生行为 | modules/biz-bionic.md | ⬜ |
 
-> 共享语音契约 `media.h`（音频参数、语音元数据、块 `kind`/`qos`；03/05/06/M2 共用）见 [media.md](media.md)——纯头文件，不是模块、不占编号。
-> 机械性切面 `with.h`（lambda 模拟 AOP around：守护/登记/结案/撤单/重挂/拦截/计数收编进切面，切面统一 `Aspect` 数据形，业务本体只写 lambda）见 [with.md](with.md)——纯头文件，不是模块、不占编号。
-> 策略注册表 `policy.h`（策略 = 行不写分支，`EventDef` 常量即行 + `static_assert` 审查套件）见 [policy.md](policy.md)——纯头文件，不是模块、不占编号。
+> 共享语音契约 `media.h`（音频参数、语音元数据、块 `kind`/`qos`；03/05/06/M2 共用）见 [media.md](./media.md)——纯头文件，不是模块、不占编号。
+> 机械性切面 `with.h`（lambda 模拟 AOP around：守护/登记/结案/撤单/重挂/拦截/计数收编进切面，切面统一 `Aspect` 数据形，业务本体只写 lambda）见 [with.md](./with.md)——纯头文件，不是模块、不占编号。
+> 策略注册表 `policy.h`（策略 = 行不写分支，`EventDef` 常量即行 + `static_assert` 审查套件）见 [policy.md](./policy.md)——纯头文件，不是模块、不占编号。
 

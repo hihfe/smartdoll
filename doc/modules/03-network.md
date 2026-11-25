@@ -1,6 +1,6 @@
 # 03 网络（Network）
 
-> 自底向上第三层（M1 子进程层，与 05 并列）：网络域，一份文档、一个进程——**全部外部 socket 的唯一出口**，服务两类对端：**终端**（server 侧，线格式）与**出站服务**（client 侧，文本流，LLM 等）。本层只管"字节怎么走、连接活不活"：报文语义归 06，路由归 M2，本地声卡归 [05](05-device-io.md)。线格式（收编 [../Architecture1.md](../Architecture1.md)）、号段 200–299、客户端 RPC 契约在本模块定死；事件循环与投递归 [01](01-dispatcher.md)，IPC 归 [02](02-ipc.md)，定时语义归 [04](04-timer.md)；选型（原生 socket + nlohmann/json）见 [../tech-stack.md](../tech-stack.md)。
+> 自底向上第三层（M1 子进程层，与 05 并列）：网络域，一份文档、一个进程——**全部外部 socket 的唯一出口**，服务两类对端：**终端**（server 侧，线格式）与**出站服务**（client 侧，文本流，LLM 等）。本层只管"字节怎么走、连接活不活"：报文语义归 06，路由归 M2，本地声卡归 [05](./05-device-io.md)。线格式（收编 [../Architecture1.md](../Architecture1.md)）、号段 200–299、客户端 RPC 契约在本模块定死；事件循环与投递归 [01](./01-dispatcher.md)，IPC 归 [02](./02-ipc.md)，定时语义归 [04](./04-timer.md)；选型（原生 socket + nlohmann/json）见 [../tech-stack.md](../tech-stack.md)。
 
 ## 职责
 

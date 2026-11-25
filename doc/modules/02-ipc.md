@@ -1,6 +1,6 @@
 # 02 进程间通信（IPC）
 
-> 自底向上第二层：IPC 传输与协议语义层。控制面走 UDS，数据面走 memfd + mmap 共享内存环（薄层自研），eventfd 只做"环从空到非空"的唤醒（选型见 [../tech-stack.md](../tech-stack.md)）。消息格式、号段 100–199、请求/响应与错误语义在本模块定死；事件循环与投递归 [01](01-dispatcher.md)，01 只把 IO 完成和 `kTypeWake` 事件投回 02 的管道。
+> 自底向上第二层：IPC 传输与协议语义层。控制面走 UDS，数据面走 memfd + mmap 共享内存环（薄层自研），eventfd 只做"环从空到非空"的唤醒（选型见 [../tech-stack.md](../tech-stack.md)）。消息格式、号段 100–199、请求/响应与错误语义在本模块定死；事件循环与投递归 [01](./01-dispatcher.md)，01 只把 IO 完成和 `kTypeWake` 事件投回 02 的管道。
 
 ## 职责
 
