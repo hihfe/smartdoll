@@ -120,7 +120,7 @@ flowchart TD
 | M1 子进程 | 05 设备 IO（Device IO·流式 IO + 事务 IO 两进程） | [modules/05-device-io.md](modules/05-device-io.md) | ✅ |
 | M1 子进程 | 06 AI（ASR/TTS/LLM 对接） | [modules/06-ai.md](modules/06-ai.md) | ✅ |
 | M1 子进程 | 07 仿生进程（Bionic） | modules/07-bionic.md | ⬜ |
-| M2 业务层 | 对话分支 | modules/biz-dialog.md | ⬜ |
+| M2 业务层 | 对话分支 | [modules/biz-dialog.md](modules/biz-dialog.md) | ✅ |
 | M2 业务层 | 仿生行为 | modules/biz-bionic.md | ⬜ |
 
 > 共享语音契约 `media.h`（音频参数、语音元数据、块 `kind`/`qos`；03/05/06/M2 共用）见 [media.md](./media.md)——纯头文件，不是模块、不占编号。
