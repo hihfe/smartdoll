@@ -1,0 +1,17 @@
+#!/bin/bash
+set -e
+
+pkg=libconcurrentqueue-dev
+
+if [ "${AUTOPKGTEST_TMP}" = "" ] ; then
+  AUTOPKGTEST_TMP=$(mktemp -d /tmp/${pkg}-test.XXXXXX)
+  trap "rm -rf ${AUTOPKGTEST_TMP}" 0 INT QUIT ABRT PIPE TERM
+fi
+
+cp -a /usr/share/doc/${pkg}/examples/* "${AUTOPKGTEST_TMP}"
+
+cd "${AUTOPKGTEST_TMP}"
+
+g++ -c -DMOODYCAMEL_STATIC -pthread  -g -O0    -fno-elide-constructors -fno-exceptions c_api/blockingconcurrentqueue.cpp c_api/concurrentqueue.cpp
+g++ -DMOODYCAMEL_STATIC -pthread  -g -O0    -fno-elide-constructors common/simplethread.cpp common/systemtime.cpp unittests/unittests.cpp blockingconcurrentqueue.o concurrentqueue.o -o unittest -lrt
+./unittest
