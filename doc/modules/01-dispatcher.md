@@ -254,26 +254,31 @@ flowchart LR
 // 启动（应用层只见各模块头文件：契约 + 门面，不见类；各门面分属不同进程，跨进程处经 02，此处按事件流连贯展示）
 auto d = disp::create();            auto timer = tmr::create(*d);
 auto ip = ipc::create(*d, *timer);  auto io = txio::create(*d, *timer, *ip);   // 05 事务侧门面
-auto body = bio::create(*d);
+auto body = bio::create(*d, *timer, *ip);                                      // 07 服务宿主（触摸/呼吸/体温/动作）
 txio::watch（*io, 触摸传感器，0, 每 10ms, 触摸管道）;   // 05 门面：读数以 kTypeSensorSample 投管道（GPIO 边沿型换 `txio::watch_edge`，事件 = `kTypeDeviceEvent`）
 tmr::every(*timer, 每 500ms, Event{.type = 呼吸 tick, .pipe = 仿生管道});   // 04 门面，到期原样投递，仿生收到的就是这条
 disp::run(*d);
 
 // 业务侧（线程池里）：只 disp::post()，不碰 io_uring
-// 触摸管道消费者：any_cast<SensorSample> 解析出触摸点 → on_touch
-void bio::on_touch(Bionic& b, 触摸点 t) {
-    disp::post(d, Event{.type = 动作指令，.pipe = 电机管道，.payload = 决策(t)});   // 摸头 → 耳朵动
+// 触摸管道消费者（07 触摸服务）：any_cast<SensorSample> 解析出触摸点 → 滤波/归一化 → on_touch
+void bio::on_touch(Bio& b, 触摸点 t) {
+    disp::post(d, Event{.type = 触摸事件, .pipe = 行为管道, .payload = t});   // 决策不在 07：只报"摸了哪里"
+}
+// 行为管道消费者（biz-bionic）：决策摸头 → 耳朵动（行为决策表住 biz-bionic）
+void bionic::on_touch(Bionic& bb, 触摸点 t) {
+    bio::trigger(*bb.svc, SvcReq{.svc = 动作服务, .verb = "play", .args = 决策(t)});   // 摸头 → 耳朵动
 }
 ```
 
 | 圈 | 醒因 | 收割 | 动作 |
 |---|---|---|---|
-| 1 | 触摸读完成（05 代跑回流） | `kTypeSensorSample`：摸了左耳 | 线程池跑 `on_touch` |
-| 2 | eventfd 被写 | 动作指令 | 05 组单代跑电机写 + 挂 04 看门狗 |
-| 3 | 电机写完成（`post()` 回流） | `kTypeActuatorDone` | 撤看门狗、摘账 |
-| 4 | 呼吸 tick 到期 | 04 弹堆投出原样 `呼吸 tick` | 线程池算呼吸曲线 → `post()` |
-| 5 | eventfd 被写 | 呼吸结果 | 05 组单代跑 I2C 写 + 挂 04 看门狗 |
-| 6 | I2C 写完成（`post()` 回流） | `kTypeActuatorDone` | 撤看门狗、摘账 |
+| 1 | 触摸读完成（05 代跑回流） | `kTypeSensorSample`：摸了左耳 | 线程池跑 07 触摸服务 `on_touch`（滤波/归一化） |
+| 2 | eventfd 被写 | 触摸事件 | biz-bionic 决策：摸头 → 耳朵动，`trigger` 动作服务 |
+| 3 | eventfd 被写 | 动作指令 | 05 组单代跑电机写 + 挂 04 看门狗 |
+| 4 | 电机写完成（`post()` 回流） | `kTypeActuatorDone` | 撤看门狗、摘账 |
+| 5 | 呼吸 tick 到期 | 04 弹堆投出原样 `呼吸 tick` | 线程池跑 07 呼吸服务算曲线 → `post()` |
+| 6 | eventfd 被写 | 呼吸结果 | 05 组单代跑 I2C 写 + 挂 04 看门狗 |
+| 7 | I2C 写完成（`post()` 回流） | `kTypeActuatorDone` | 撤看门狗、摘账 |
 
 没事发生时循环睡在等待里，不占 CPU。
 

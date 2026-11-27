@@ -61,7 +61,7 @@ template <Ledger Tab, class Key> Aspect settle(Tab& tab, Key&& key, const OpPoli
 | 工厂 | state | enter | exit（恒一次） | 拒绝 | 收编自 |
 |---|---|---|---|---|---|
 | `live(x)` | 资源指针 | 查 `stopped` | — | 返回 `false`/断言 | 各门面"stop 后一律拒绝" |
-| `ticket(tab, e, row, t, ns, tpl)` | 表 / 条目 / `OpPolicy` 行 / 超时句柄 | 登记 + 在飞 + 按行挂超时 | 结案销账 + 撤超时 + 归零才销毁 | 迟到/作废：丢弃并计数 | 01 票根、02 请求表、05 IoTicket、06 任务表 |
+| `ticket(tab, e, row, t, ns, tpl)` | 表 / 条目 / `OpPolicy` 行 / 超时句柄 | 登记 + 在飞 + 按行挂超时 | 结案销账 + 撤超时 + 归零才销毁 | 迟到/作废：丢弃并计数 | 01 票根、02 请求表、05 IoTicket、06 任务表、07 服务对账 |
 | `settle(tab, id, row)` | 表 / 单号 / `OpPolicy` 行 | 查条目 | 汇到 `ticket` 的同一 exit | 落空/作废 = 迟到：丢弃并计数 | 01 收割结案、02 销账、05 完成回流、06 摘单 |
 | `rearm(op)` | 常驻读单 | — | 读完成即重挂（每对端/连接/设备一张在飞） | — | 02 UDS、03 socket、04 timerfd、05 边沿 |
 | `defer(d)` | `Dispatcher` 指针 | 阻塞本体提交线程池 | 完成 `post()` 回流 | — | 03 connect、05 ioctl、06 ASR/TTS 代跑 |
@@ -69,7 +69,7 @@ template <Ledger Tab, class Key> Aspect settle(Tab& tab, Key&& key, const OpPoli
 | `backpressure（d, ev 行）` | `Dispatcher` + `EventDef` 行指针 | 查 `qos` 行（阻塞/丢弃计数/留最新） | 丢弃即计数 | — | 01 投队列、02/03/05 环写 |
 | `block(ip, view)` | `Ipc` + 块视图 | — | 语义住 [02](modules/02-ipc.md)（见定义行） | — | 03/05/06 的"用完必须 release" |
 | `heap(t)` | `Timer` 指针 | 语义住 [04](modules/04-timer.md)（见定义行） | 语义住 [04](modules/04-timer.md)（见定义行） | — | 04 的"动堆必重设" |
-| `rpc(ip, peer, "op", args, ev_pipe, row, timeout)` | 对端 + 报文参数 / `OpPolicy` 行 | 组报文 + 经 02 发请求 | 销账 + 错误码翻译 + 事件翻号段投递 | 发送失败/超时：错误码回填 | 03/06 客户端桩壳 |
+| `rpc(ip, peer, "op", args, ev_pipe, row, timeout)` | 对端 + 报文参数 / `OpPolicy` 行 | 组报文 + 经 02 发请求 | 销账 + 错误码翻译 + 事件翻号段投递 | 发送失败/超时：错误码回填 | 03/06/07 客户端桩壳 |
 
 > `block` 住 [modules/02-ipc.md](modules/02-ipc.md)、`heap` 住 [modules/04-timer.md](modules/04-timer.md)，其余住 with.h；工厂只依赖参数类型与策略行指针，不反向依赖模块。
 

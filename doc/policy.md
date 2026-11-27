@@ -40,6 +40,7 @@ inline constexpr EventDef kTypeIpcDataReady{103, kIpc, Qos::kBlock};  // 数据�
 | 04 定时器 | 300–399 | `kTmr` | — |
 | 05 设备 IO | 400–499 | `kDev` | 400–409 公共 / 410–449 流式 / 450–499 事务 |
 | 06 AI | 500–599 | `kAi` | 500–509 公共 / 510–549 前端·ASR / 550–579 LLM / 580–599 TTS |
+| 07 仿生 | 600–699 | `kBio` | 600–609 公共 / 610–639 触摸 / 640–669 呼吸 / 670–689 体温 / 690–699 动作 |
 | M2 业务层 | 1000 起 | `kBiz` | 1000–1049 对话分支 / 1050–1099 仿生行为 |
 
 ## 机制三：编译期审查套件
@@ -76,7 +77,7 @@ policy.h 顶一组 `static_assert`，漏一个都编译不过：
 // —— 支撑类型（EventDef 的字段类型，定义在此）——
 using EventType = uint32_t;    // 弱类型：enum class 封死扩展，不用；审查归 static_assert 套件
 enum ModuleId : uint32_t {     // 号段主人；值 = 号段基值（模块号 × 100），行不越段 = id ∈ [基值, 基值+100)（kBiz：≥ 1000）
-    kDisp = 0, kIpc = 100, kNet = 200, kTmr = 300, kDev = 400, kAi = 500, kBiz = 1000,
+    kDisp = 0, kIpc = 100, kNet = 200, kTmr = 300, kDev = 400, kAi = 500, kBio = 600, kBiz = 1000,
 };
 enum class Qos { kBlock, kDropCount, kKeepLatest };    // 队列满处置：阻塞 / 丢弃计数 / 留最新
 
@@ -88,6 +89,7 @@ enum class OpKind {                 // 单据类别（键）
     kNetConnect,     // 03 出站 connect 代跑
     kLlmRequest,     // 06 LLM 请求
     kAsrTts,         // 06 ASR 流 / TTS 单
+    kSvcTrigger,     // 07 服务 trigger 在飞单
     kTimerfdRead,    // 04 timerfd 读单
 };
 enum class TimeoutSrc { kNone, kCaller, kSpec };   // 超时参数来源：无超时 / 调用方给（timeout_ns 形参）/ 行内默认
@@ -167,6 +169,7 @@ struct Backoff {
 | 03 出站 connect 代跑 | 调用方给 | 下一档退避重试 | 丢弃并计数 | 03 |
 | 06 LLM 请求 | 调用方给（首增量上限） | `kTypeLlmDone(kTimeout)` 结案 | 丢弃并计数 | 06 |
 | 06 ASR 流 / TTS 单 | 无超时 | —（等待是常态） | 丢弃并计数 | 06 |
+| 07 服务 trigger 单 | 无超时 | —（05 看门狗波及结案：`kTypeDeviceDead` → `kDead`） | 丢弃并计数 | 07 |
 | 04 timerfd 读单 | 无超时（机制本身是定时） | `kTypeError` 自愈重建 + 重挂 | — | 04 |
 
 ## 错误归属（ErrPolicy 行）

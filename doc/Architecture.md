@@ -28,6 +28,7 @@ flowchart TD
         NET["网络"]
         DEV["设备 IO（拆两进程）<br/>流式 IO：音频·扬声器<br/>事务 IO：传感器·动作·触摸<br/>延时 IO(I2C/SPI) 线程代跑"]
         AI["AI"]
+        BIO["仿生 07（设备服务）<br/>触摸·呼吸·体温·动作服务"]
     end
 
     TMR["时间堆<br/>（进程内原语·04 持有）"]
@@ -36,6 +37,7 @@ flowchart TD
     TMR -->|到期唤醒（timerfd）| URING
     DEV -->|完成事件| URING
     AI -->|完成事件| URING
+    BIO -->|完成事件| URING
 
     URING["Uring<br/>（io_uring）"] --> QUEUE["queue"]
     QUEUE --> DISP["分发器"]
@@ -47,23 +49,22 @@ flowchart TD
         T3 --> T4["④ 语音 → 扬声器"]
     end
 
-    subgraph BIO["仿生 · 单独进程（监听和投递事件）"]
-        B1["① 触摸 → 不同部位 不同微动"]
-        B2["② 持续呼吸"]
-        B3["③ 体温"]
+    subgraph BION["仿生分支"]
+        BB["biz-bionic 行为调度<br/>触摸决策 · 模式切换 · 对话联动"]
     end
 
     POOL --> T1
-    POOL --> B1
+    POOL --> BB
+    BB -.->|"trigger 服务（经 02）"| BIO
 ```
 
 图注：
 
-- **进程**：主进程（Proactor）控制网络、设备 IO、AI 子进程；设备 IO 拆**流式 IO**（音频、扬声器）与**事务 IO**（传感器、动作、触摸）两个进程，边界按时延预算与内核阻塞特性划（判据见 [modules/05-device-io.md](modules/05-device-io.md)）。其中延时 IO（I2C、SPI）由线程代跑、完成后回流事件，防止内核阻塞。
+- **进程**：主进程（Proactor）控制网络、设备 IO、AI、仿生子进程；设备 IO 拆**流式 IO**（音频、扬声器）与**事务 IO**（传感器、动作、触摸）两个进程，边界按时延预算与内核阻塞特性划（判据见 [modules/05-device-io.md](modules/05-device-io.md)）。其中延时 IO（I2C、SPI）由线程代跑、完成后回流事件，防止内核阻塞。**07 仿生进程**是设备服务宿主（触摸/呼吸/体温/动作四类服务，监听和投递事件，见 [modules/07-bionic.md](modules/07-bionic.md)）。
 - **定时**：时间堆是进程内原语（04 持有时间堆与定时语义），各进程 04 按堆顶 `timerfd_settime` 设时、到期读完成进事件循环，不设独立定时器进程。
 - **事件汇聚**：各子进程的异步完成事件统一进入 `Uring`（io_uring），经 `queue` 排队。
 - **分发**：`分发器` 从队列取出事件，写入管道（队列），由 `线程池` 消费执行，避免阻塞事件循环。
-- **业务**：线程池驱动两路业务——对话分支（语音进语音出）与仿生（触摸、呼吸、体温）。
+- **业务**：线程池驱动两路业务——对话分支（语音进语音出）与仿生行为（biz-bionic 调度触发 07 的服务：触摸决策、呼吸/体温/动作的触发）。
 
 #### 进程间通信
 
@@ -119,9 +120,9 @@ flowchart TD
 | M1 子进程 | 03 网络（Network） | [modules/03-network.md](modules/03-network.md) | ✅ |
 | M1 子进程 | 05 设备 IO（Device IO·流式 IO + 事务 IO 两进程） | [modules/05-device-io.md](modules/05-device-io.md) | ✅ |
 | M1 子进程 | 06 AI（ASR/TTS/LLM 对接） | [modules/06-ai.md](modules/06-ai.md) | ✅ |
-| M1 子进程 | 07 仿生进程（Bionic） | modules/07-bionic.md | ⬜ |
+| M1 子进程 | 07 仿生进程（Bionic·设备服务宿主：触摸/呼吸/体温/动作服务） | [modules/07-bionic.md](modules/07-bionic.md) | ✅ |
 | M2 业务层 | 对话分支 | [modules/biz-dialog.md](modules/biz-dialog.md) | ✅ |
-| M2 业务层 | 仿生行为 | modules/biz-bionic.md | ⬜ |
+| M2 业务层 | 仿生行为（biz-bionic·行为调度与触发） | modules/biz-bionic.md | ⬜ |
 
 > 共享语音契约 `media.h`（音频参数、语音元数据、块 `kind`/`qos`；03/05/06/M2 共用）见 [media.md](./media.md)——纯头文件，不是模块、不占编号。
 > 机械性切面 `with.h`（lambda 模拟 AOP around：守护/登记/结案/撤单/重挂/拦截/计数收编进切面，切面统一 `Aspect` 数据形，业务本体只写 lambda）见 [with.md](./with.md)——纯头文件，不是模块、不占编号。
