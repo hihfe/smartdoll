@@ -16,8 +16,9 @@
 //   · HandlerRow.fn 用 std::function：分流表以花括号列捕获 lambda（各模块 inbox 用法），
 //     裸函数指针收不了捕获。
 // 已落地的工厂（P1，签名微调已注在定义处）：live / ticket / settle / backpressure / rearm。
-// 待随模块落地：defer（01 代跑，03/05/06 用）、intercept（错误拦截）、block（02 数据面块）、
-// heap（04 动堆）、rpc（03/06 桩壳）——签名见 doc/with.md，状态/enter/exit 语义住各模块文档。
+// heap 已落地住 04（tmr_internal.h）；block 声明已出住 02（ipc.h，定义待数据面接线）。
+// 待随模块落地：defer（01 代跑，03/05/06 用）、intercept（错误拦截）、rpc（03/06 桩壳）
+// ——签名见 doc/with.md，状态/enter/exit 语义住各模块文档。
 
 #include <cassert>
 #include <concepts>

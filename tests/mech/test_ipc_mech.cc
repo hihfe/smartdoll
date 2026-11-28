@@ -72,17 +72,17 @@ TEST_CASE("02：listen/connect 环回建连，双端各首挂读单", "[02]") {
         std::vector<PeerId> ids;            // 存活对端清单（首挂读单入表后才可见）
     };
 
-    // Arrange：环回 harness 一次到位
+    // 环回 harness 一次到位
     auto build_loopback_pair = [] {
         auto fx = std::make_unique<Fx>();
         fx->h = std::make_unique<IpcHarness>();
         return fx;
     };
-    // Act：取存活对端清单
+    // 取存活对端清单
     auto run_collect_live_peers = [](Fx& fx) {
         fx.ids = ipc::peer_ids(*fx.h->ip);
     };
-    // Assert：客户端号非零、双端建连、两个互异对端各据一条连接
+    // 客户端号非零、双端建连、两个互异对端各据一条连接
     auto expect_two_distinct_live_peers = [](const Fx& fx) {
         REQUIRE(fx.h->peer != 0);
         REQUIRE(fx.h->peers_up);
@@ -106,14 +106,14 @@ TEST_CASE("02：notify 单向送达 events 管道（request_id = 0）", "[02]") 
         size_t pending_after = 1;            // 初值 1：过不了 == 0
     };
 
-    // Arrange：harness + 待发通知
+    // harness + 待发通知
     auto build_notify_envelope = [] {
         auto fx = std::make_unique<Fx>();
         fx->h = std::make_unique<IpcHarness>();
         fx->msg.body = "hello-notify";
         return fx;
     };
-    // Act：发通知 → 等送达 → 取事件解视图，观察记进夹具
+    // 发通知 → 等送达 → 取事件解视图，观察记进夹具
     auto run_send_notify_and_capture_delivery = [](Fx& fx) {
         ipc::notify(*fx.h->ip, fx.h->peer, fx.msg);
         fx.delivered = fx.h->box.wait_type(kTypeIpcNotify, ms(2000));
@@ -124,7 +124,7 @@ TEST_CASE("02：notify 单向送达 events 管道（request_id = 0）", "[02]") 
         }
         fx.pending_after = ipc::pending_count(*fx.h->ip);
     };
-    // Assert：单向送达、id = 0（不登记不等待）、事件不进请求表
+    // 单向送达、id = 0（不登记不等待）、事件不进请求表
     auto expect_notify_delivered_without_registration = [](const Fx& fx) {
         REQUIRE(fx.h->peers_up);
         REQUIRE(fx.delivered);
@@ -157,7 +157,7 @@ TEST_CASE("02：request→respond 往返，request_id 对账 + error_code/body �
         size_t pending_after_response = 1;   // 初值 1：过不了 == 0
     };
 
-    // Arrange：harness + 请求与响应报文
+    // harness + 请求与响应报文
     auto build_request_response_pair = [] {
         auto fx = std::make_unique<Fx>();
         fx->h = std::make_unique<IpcHarness>();
@@ -165,7 +165,7 @@ TEST_CASE("02：request→respond 往返，request_id 对账 + error_code/body �
         fx->resp.body = R"({"ok":1})";
         return fx;
     };
-    // Act：发请求 → 等入站 → 回响应 → 等回执，每步观察记进夹具
+    // 发请求 → 等入站 → 回响应 → 等回执，每步观察记进夹具
     auto run_request_then_respond_roundtrip = [](Fx& fx) {
         fx.id = ipc::request(*fx.h->ip, fx.h->peer, fx.req, fx.h->box.pipe(),
                              2'000'000'000ull);
@@ -184,7 +184,7 @@ TEST_CASE("02：request→respond 往返，request_id 对账 + error_code/body �
         if (fx.out) fx.out_view = std::any_cast<IpcMessageView>(fx.out->payload);
         fx.pending_after_response = ipc::pending_count(*fx.h->ip);
     };
-    // Assert：线上号 = 发出号、错误码与负载原样透传、settle 销账
+    // 线上号 = 发出号、错误码与负载原样透传、settle 销账
     auto expect_roundtrip_reconciles_by_request_id = [](const Fx& fx) {
         REQUIRE(fx.h->peers_up);
         REQUIRE(fx.id != 0);
@@ -222,14 +222,14 @@ TEST_CASE("02：请求超时合成 kTimeout 响应（与响应同形）；迟到
         size_t late_after = 0;
     };
 
-    // Arrange：harness + 永不作答的请求
+    // harness + 永不作答的请求
     auto build_unanswered_request = [] {
         auto fx = std::make_unique<Fx>();
         fx->h = std::make_unique<IpcHarness>();
         fx->req.body = "never-answered";
         return fx;
     };
-    // Act：发请求等超时回执 → 记账 → 补发迟到响应 → 等拒收计数上涨
+    // 发请求等超时回执 → 记账 → 补发迟到响应 → 等拒收计数上涨
     auto run_timeout_then_send_late_response = [](Fx& fx) {
         fx.id = ipc::request(*fx.h->ip, fx.h->peer, fx.req, fx.h->box.pipe(), 50'000'000);
         fx.response_seen = fx.h->box.wait_type(kTypeIpcResponse, ms(2000));
@@ -248,7 +248,7 @@ TEST_CASE("02：请求超时合成 kTimeout 响应（与响应同形）；迟到
             [&] { return ipc::late_response_count(*fx.h->ip) > fx.late_before; }, ms(2000));
         fx.late_after = ipc::late_response_count(*fx.h->ip);
     };
-    // Assert：与响应同形的 kTimeout、超时即销账；迟到响应查表落空被拒收且只计一次
+    // 与响应同形的 kTimeout、超时即销账；迟到响应查表落空被拒收且只计一次
     auto expect_timeout_response_and_late_rejection = [](const Fx& fx) {
         REQUIRE(fx.h->peers_up);
         REQUIRE(fx.response_seen);
@@ -282,14 +282,14 @@ TEST_CASE("02：断连 → 未决请求 kBroken 回填 + kTypeIpcBroken 上报",
         size_t pending_after_kill = 1;       // 初值 1：过不了 == 0
     };
 
-    // Arrange：harness + 挂着不答的请求
+    // harness + 挂着不答的请求
     auto build_outstanding_request = [] {
         auto fx = std::make_unique<Fx>();
         fx->h = std::make_unique<IpcHarness>();
         fx->req.body = "waiting-for-forever";
         return fx;
     };
-    // Act：发请求 → 等对端收到 → 模拟对端退出 → 等断连上报与 kBroken 回执
+    // 发请求 → 等对端收到 → 模拟对端退出 → 等断连上报与 kBroken 回执
     auto run_kill_peer_with_outstanding_request = [](Fx& fx) {
         fx.id = ipc::request(*fx.h->ip, fx.h->peer, fx.req, fx.h->box.pipe(),
                              10'000'000'000ull);
@@ -307,7 +307,7 @@ TEST_CASE("02：断连 → 未决请求 kBroken 回填 + kTypeIpcBroken 上报",
         if (fx.ev) fx.view = std::any_cast<IpcMessageView>(fx.ev->payload);
         fx.pending_after_kill = ipc::pending_count(*fx.h->ip);
     };
-    // Assert：断连事件带对端号，未决请求以 kBroken 回填并销账
+    // 断连事件带对端号，未决请求以 kBroken 回填并销账
     auto expect_broken_report_and_pending_backfilled = [](const Fx& fx) {
         REQUIRE(fx.h->peers_up);
         REQUIRE(fx.request_seen);
@@ -338,7 +338,7 @@ TEST_CASE("02：坏 magic 断连（帧头校验失败，不投递）", "[02]") {
         size_t request_events = 1;                   // 初值 1：过不了 == 0（坏帧不投业务）
     };
 
-    // Arrange：harness + 指纹写错的 32B 原始头
+    // harness + 指纹写错的 32B 原始头
     auto build_bad_magic_frame = [] {
         auto fx = std::make_unique<Fx>();
         fx->h = std::make_unique<IpcHarness>();
@@ -349,7 +349,7 @@ TEST_CASE("02：坏 magic 断连（帧头校验失败，不投递）", "[02]") {
         std::memcpy(fx->raw.data(), &h, sizeof h);
         return fx;
     };
-    // Act：取对端 fd 直写坏帧 → 等断连上报 → 数入站请求数
+    // 取对端 fd 直写坏帧 → 等断连上报 → 数入站请求数
     auto run_inject_bad_magic_and_wait_break = [](Fx& fx) {
         fx.fd = ipc::peer_fd(*fx.h->ip, fx.h->peer);
         if (fx.fd >= 0)
@@ -357,7 +357,7 @@ TEST_CASE("02：坏 magic 断连（帧头校验失败，不投递）", "[02]") {
         fx.broken_seen = fx.h->box.wait_type(kTypeIpcBroken, ms(2000));
         fx.request_events = fx.h->box.count(kTypeIpcRequest);
     };
-    // Assert：坏帧触发断连，且一个业务请求都不投
+    // 坏帧触发断连，且一个业务请求都不投
     auto expect_break_without_business_delivery = [](const Fx& fx) {
         REQUIRE(fx.h->peers_up);
         REQUIRE(fx.fd >= 0);
@@ -383,14 +383,14 @@ TEST_CASE("02：超 kMaxPayload 请求回填 kTooLarge，不发不等超时", "[
         size_t request_events = 1;            // 初值 1：过不了 == 0（对端根本没收到）
     };
 
-    // Arrange：harness + 超上限负载（kMaxPayload + 1）
+    // harness + 超上限负载（kMaxPayload + 1）
     auto build_oversize_request = [] {
         auto fx = std::make_unique<Fx>();
         fx->h = std::make_unique<IpcHarness>();
         fx->req.body = std::string(kMaxPayload + 1, 'x');
         return fx;
     };
-    // Act：发请求 → 等即时回执 → 记账与入站请求数
+    // 发请求 → 等即时回执 → 记账与入站请求数
     auto run_send_oversize_and_capture_rejection = [](Fx& fx) {
         fx.id = ipc::request(*fx.h->ip, fx.h->peer, fx.req, fx.h->box.pipe(),
                              5'000'000'000ull);
@@ -400,7 +400,7 @@ TEST_CASE("02：超 kMaxPayload 请求回填 kTooLarge，不发不等超时", "[
         fx.pending_after = ipc::pending_count(*fx.h->ip);
         fx.request_events = fx.h->box.count(kTypeIpcRequest);
     };
-    // Assert：立即回 kTooLarge 并销账，且帧根本没出（不等超时）
+    // 立即回 kTooLarge 并销账，且帧根本没出（不等超时）
     auto expect_too_large_filled_immediately = [](const Fx& fx) {
         REQUIRE(fx.h->peers_up);
         REQUIRE(fx.id != 0);
@@ -434,7 +434,7 @@ TEST_CASE("02：stop 摘请求表 kBroken 回填，之后门面一律拒绝", "[
         bool rejected_write = true;          // 初值 true：过不了 REQUIRE_FALSE
     };
 
-    // Arrange：harness + 挂着的请求 + 探针报文
+    // harness + 挂着的请求 + 探针报文
     auto build_request_then_stop_scenario = [] {
         auto fx = std::make_unique<Fx>();
         fx->h = std::make_unique<IpcHarness>();
@@ -442,7 +442,7 @@ TEST_CASE("02：stop 摘请求表 kBroken 回填，之后门面一律拒绝", "[
         fx->probe.body = "x";
         return fx;
     };
-    // Act：发请求 → 等入站 → stop → 等 kBroken 回执 → 再打各门面验 live 拒绝
+    // 发请求 → 等入站 → stop → 等 kBroken 回执 → 再打各门面验 live 拒绝
     auto run_stop_then_probe_every_facade = [](Fx& fx) {
         fx.id = ipc::request(*fx.h->ip, fx.h->peer, fx.req, fx.h->box.pipe(),
                              30'000'000'000ull);
@@ -463,7 +463,7 @@ TEST_CASE("02：stop 摘请求表 kBroken 回填，之后门面一律拒绝", "[
         ipc::notify(*fx.h->ip, fx.h->peer, fx.probe);         // 拒绝即静默（不发不炸）
         ipc::respond(*fx.h->ip, fx.h->peer, fx.id, fx.probe, 0);
     };
-    // Assert：停机摘表回填 kBroken，此后 request/connect/write 一律被 live 拒绝
+    // 停机摘表回填 kBroken，此后 request/connect/write 一律被 live 拒绝
     auto expect_stop_backfills_and_rejects_new_calls = [](const Fx& fx) {
         REQUIRE(fx.h->peers_up);
         REQUIRE(fx.request_seen);
@@ -498,14 +498,14 @@ TEST_CASE("02：write_data 零拷贝送达 kTypeIpcDataReady，release 归还槽
         DataBlockView v2{};
     };
 
-    // Arrange：harness + 一块负载
+    // harness + 一块负载
     auto build_audio_block_scenario = [] {
         auto fx = std::make_unique<Fx>();
         fx->h = std::make_unique<IpcHarness>();
         fx->payload = "PCM-BLOCK-0001";
         return fx;
     };
-    // Act：写块 → 等 DataReady 解视图 → release → 再写一块验槽位复用
+    // 写块 → 等 DataReady 解视图 → release → 再写一块验槽位复用
     auto run_write_release_then_reuse_slot = [](Fx& fx) {
         fx.wrote_first = ipc::write_data(*fx.h->ip, fx.h->peer, bytes_of(fx.payload));
         fx.ready_seen = fx.h->box.wait_type(kTypeIpcDataReady, ms(2000));
@@ -522,7 +522,7 @@ TEST_CASE("02：write_data 零拷贝送达 kTypeIpcDataReady，release 归还槽
         if (fx.ev2) fx.v2 = std::any_cast<DataBlockView>(fx.ev2->payload);
         ipc::release(*fx.h->ip, fx.v2);
     };
-    // Assert：块零拷贝保真、环号/来源齐全，release 后仍写得进且 seq 不回卷
+    // 块零拷贝保真、环号/来源齐全，release 后仍写得进且 seq 不回卷
     auto expect_block_delivered_and_slot_reused = [](const Fx& fx) {
         REQUIRE(fx.h->peers_up);
         REQUIRE(fx.wrote_first);
@@ -561,13 +561,13 @@ TEST_CASE("02：seq 跳号 → kTypeIpcDataLost（崩溃重建对账）", "[02]"
         DataBlockView v2{};
     };
 
-    // Arrange：harness（首块与跳号后的块在 Act 依次写）
+    // harness（首块与跳号后的块在 Act 依次写）
     auto build_seq_gap_pair = [] {
         auto fx = std::make_unique<Fx>();
         fx->h = std::make_unique<IpcHarness>();
         return fx;
     };
-    // Act：首块入环消费（立对账基准）→ 白盒跳号 → 再写 → 等 DataLost 与后续 DataReady
+    // 首块入环消费（立对账基准）→ 白盒跳号 → 再写 → 等 DataLost 与后续 DataReady
     auto run_skip_seq_then_capture_gap = [](Fx& fx) {
         fx.wrote_first = ipc::write_data(*fx.h->ip, fx.h->peer, bytes_of("block-0"));
         fx.first_ready = fx.h->box.wait_type(kTypeIpcDataReady, ms(2000));
@@ -588,7 +588,7 @@ TEST_CASE("02：seq 跳号 → kTypeIpcDataLost（崩溃重建对账）", "[02]"
         if (fx.rd) fx.v2 = std::any_cast<DataBlockView>(fx.rd->payload);
         ipc::release(*fx.h->ip, fx.v2);
     };
-    // Assert：丢块区间 [1, 3) 投 deliver 管道，跳号不挡后续块投递
+    // 丢块区间 [1, 3) 投 deliver 管道，跳号不挡后续块投递
     auto expect_gap_range_reported_and_flow_continues = [](const Fx& fx) {
         REQUIRE(fx.h->peers_up);
         REQUIRE(fx.wrote_first);

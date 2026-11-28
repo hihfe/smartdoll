@@ -15,7 +15,7 @@
 using EventType = uint32_t;    // 弱类型：enum class 封死扩展，不用；审查归 static_assert 套件
 
 enum ModuleId : uint32_t {     // 号段主人；值 = 号段基值（模块号 × 100），行不越段 = id ∈ [基值, 基值+100)（kBiz：≥ 1000）
-    kDisp = 0, kIpc = 100, kNet = 200, kTmr = 300, kDev = 400, kAi = 500, kBiz = 1000,
+    kDisp = 0, kIpc = 100, kNet = 200, kTmr = 300, kDev = 400, kAi = 500, kBio = 600, kBiz = 1000,
 };
 
 enum class Qos { kBlock, kDropCount, kKeepLatest };    // 队列满处置：阻塞 / 丢弃计数 / 留最新
@@ -127,6 +127,7 @@ inline constexpr std::array kIdSegments{
     IdSegment{kTmr,  300,  400},
     IdSegment{kDev,  400,  500},
     IdSegment{kAi,   500,  600},
+    IdSegment{kBio,  600,  700},
     IdSegment{kBiz,  1000, std::numeric_limits<uint32_t>::max()},
 };
 

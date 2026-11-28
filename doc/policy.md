@@ -45,7 +45,7 @@ inline constexpr EventDef kTypeIpcDataReady{103, kIpc, Qos::kBlock};  // 数据�
 
 ## 机制三：编译期审查套件
 
-policy.h 顶一组 `static_assert`，漏一个都编译不过：
+policy.h 顶 `static_assert`（号段互不重叠），其余审查是 constexpr 审计函数（`rows_unique` / `rows_in_segments` / `op_rows_complete`），由契约块与测试套件（test_contracts）`static_assert` 调用——漏一个都编译不过：
 
 | 审什么 | 怎么审 |
 |---|---|
@@ -53,9 +53,9 @@ policy.h 顶一组 `static_assert`，漏一个都编译不过：
 | 行不越段 | 每行 `id ∈ owner` 号段 |
 | id 全局唯一 | 全表按 id 排序后相邻不等 |
 | 策略值合法 | `Qos`/处置枚举是 `enum class`，非法值根本写不出 |
-| 分流覆盖 | 各模块 inbox 的 `with(ev, …)` 表覆盖本模块全部内部事件 |
-| 单据有超时行 | 每类在飞单恰有一行 `OpPolicy`，超时参数不出行外 |
-| 块声明带 qos | 每个 `kKind*` 的生产方声明 `kQos*`（与 media.h 声明制对齐） |
+| 分流覆盖 | 各模块 inbox 的 `with(ev, …)` 表覆盖本模块全部内部事件（待落地：尚无该审查） |
+| 单据有超时行 | 每类在飞单恰有一行 `OpPolicy`（锚点 `kOpKindCount = 8`，增枚举必同步），超时参数不出行外 |
+| 块声明带 qos | 每个 `kKind*` 的生产方声明 `kQos*`（与 media.h 声明制对齐；待落地） |
 
 ## 策略行形一览
 
@@ -89,8 +89,9 @@ enum class OpKind {                 // 单据类别（键）
     kNetConnect,     // 03 出站 connect 代跑
     kLlmRequest,     // 06 LLM 请求
     kAsrTts,         // 06 ASR 流 / TTS 单
-    kSvcTrigger,     // 07 服务 trigger 在飞单
     kTimerfdRead,    // 04 timerfd 读单
+    kUringIo,        // 01 IO 申请单（02/03 常驻读单、eventfd 唤醒单、读写单）——P1 补行
+    kSvcTrigger,     // 07 服务 trigger 在飞单（待 07 落码；届时 kOpKindCount 8→9）
 };
 enum class TimeoutSrc { kNone, kCaller, kSpec };   // 超时参数来源：无超时 / 调用方给（timeout_ns 形参）/ 行内默认
 enum class OpTimeoutAct {          // 超时处置
@@ -169,8 +170,9 @@ struct Backoff {
 | 03 出站 connect 代跑 | 调用方给 | 下一档退避重试 | 丢弃并计数 | 03 |
 | 06 LLM 请求 | 调用方给（首增量上限） | `kTypeLlmDone(kTimeout)` 结案 | 丢弃并计数 | 06 |
 | 06 ASR 流 / TTS 单 | 无超时 | —（等待是常态） | 丢弃并计数 | 06 |
-| 07 服务 trigger 单 | 无超时 | —（05 看门狗波及结案：`kTypeDeviceDead` → `kDead`） | 丢弃并计数 | 07 |
+| 07 服务 trigger 单（待 07 落地） | 无超时 | —（05 看门狗波及结案：`kTypeDeviceDead` → `kDead`） | 丢弃并计数 | 07 |
 | 04 timerfd 读单 | 无超时（机制本身是定时） | `kTypeError` 自愈重建 + 重挂 | — | 04 |
+| 01 IO 申请单（读写/唤醒/常驻读） | 无超时 | —（完成即结账） | 丢弃并计数 | 01 |
 
 ## 错误归属（ErrPolicy 行）
 
