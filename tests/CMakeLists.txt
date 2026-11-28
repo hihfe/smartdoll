@@ -4,7 +4,8 @@ include(Catch)
 set(DOLL_TEST_LIBS doll_contracts Catch2::Catch2WithMain)
 set(DOLL_WHITEBOX_INCLUDES
     ${CMAKE_SOURCE_DIR}/src/01-dispatcher
-    ${CMAKE_SOURCE_DIR}/src/04-timer)
+    ${CMAKE_SOURCE_DIR}/src/04-timer
+    ${CMAKE_SOURCE_DIR}/src/02-ipc)
 
 add_executable(test_with unit/test_with.cc)
 target_link_libraries(test_with PRIVATE ${DOLL_TEST_LIBS})
@@ -37,3 +38,15 @@ target_include_directories(test_tmr_mech PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${DOLL_WHITEBOX_INCLUDES})
 catch_discover_tests(test_tmr_mech)
+
+add_executable(test_ipc_pure unit/test_ipc_pure.cc)
+target_link_libraries(test_ipc_pure PRIVATE ${DOLL_TEST_LIBS} ipc)
+target_include_directories(test_ipc_pure PRIVATE ${DOLL_WHITEBOX_INCLUDES})
+catch_discover_tests(test_ipc_pure)
+
+add_executable(test_ipc_mech mech/test_ipc_mech.cc)
+target_link_libraries(test_ipc_mech PRIVATE ${DOLL_TEST_LIBS} ipc tmr disp)
+target_include_directories(test_ipc_mech PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}                # common/fixture.h
+    ${DOLL_WHITEBOX_INCLUDES})
+catch_discover_tests(test_ipc_mech)

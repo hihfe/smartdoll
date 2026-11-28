@@ -43,5 +43,11 @@ add_library(tmr STATIC src/04-timer/tmr.cc)
 target_link_libraries(tmr PUBLIC doll_contracts PRIVATE doll_vendor disp)
 target_include_directories(tmr PRIVATE src/04-timer)
 
+add_library(ipc STATIC src/02-ipc/ipc.cc)
+# disp/tmr 公开传导：ipc.cc 调 01/01 门面（post/submit_op/open_pipe、tmr::after/cancel），
+# 静态库消费方（测试/上层）需一并链上
+target_link_libraries(ipc PUBLIC doll_contracts disp tmr PRIVATE doll_vendor)
+target_include_directories(ipc PRIVATE src/02-ipc)
+
 enable_testing()
 add_subdirectory(tests)

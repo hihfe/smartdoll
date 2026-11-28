@@ -214,7 +214,11 @@ static void submit_now(Dispatcher& d, OpCtx op) {     // 上环（仅循环线�
     with(ticket(d.ops, std::move(op), row, nullptr, 0, Event{}), [&](OpCtx& ctx) {
         io_uring_sqe* sqe = d.ring.get_sqe();
         if (!sqe) throw std::runtime_error("disp: SQ 满");
-        io_uring_prep_read(sqe, ctx.fd, ctx.buf, ctx.len, 0);   // 读写/timerfd/eventfd 统一 read 形
+        // 读写按 IO 形分派（timerfd/eventfd/读单统一 read 形；socket 写必须 write 形，否则变成收数据）
+        if (ctx.kind == IoKind::kSocketWrite)
+            io_uring_prep_write(sqe, ctx.fd, ctx.buf, ctx.len, 0);
+        else
+            io_uring_prep_read(sqe, ctx.fd, ctx.buf, ctx.len, 0);
         io_uring_sqe_set_data64(sqe, uint64_t(&ctx));           // 票根 = 表内条目指针
     });
 }
